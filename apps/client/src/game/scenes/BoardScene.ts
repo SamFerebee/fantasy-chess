@@ -6,6 +6,7 @@ import { TilePicker } from "../input/TilePicker";
 import { createInitialUnits } from "../units/initialUnits";
 import { UnitRenderer } from "../units/UnitRenderer";
 import { SelectionController } from "../controllers/SelectionController";
+import { MoveRangeOverlay } from "../movement/MoveRangeOverlay";
 
 export class BoardScene extends Phaser.Scene {
   create() {
@@ -29,11 +30,14 @@ export class BoardScene extends Phaser.Scene {
     const unitRenderer = new UnitRenderer(this, cfg, units);
     unitRenderer.create();
 
+    const moveOverlay = new MoveRangeOverlay(this, cfg, units);
+    moveOverlay.setSelectedUnit(null);
+
     // Overlay + picker
     const overlay = new TileOverlay(this, cfg);
     const picker = new TilePicker(this, cfg, cam);
 
     // Input wiring
-    new SelectionController(this, cam, picker, overlay, unitRenderer).attach();
+    new SelectionController(this, cam, picker, overlay, unitRenderer, moveOverlay).attach();
   }
 }
