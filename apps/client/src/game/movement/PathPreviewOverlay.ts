@@ -38,16 +38,16 @@ export class PathPreviewOverlay {
     this.g.clear();
     this.g.setVisible(true);
 
-    // Draw discrete tile highlights (diamonds), skipping the start tile so we don't cover the unit.
-    // Tweak these if you want a tighter/looser highlight.
-    const inset = 0.70; // 1.0 = full tile diamond, smaller = inset diamond
-    const hw = (this.tileW / 2) * inset;
-    const hh = (this.tileH / 2) * inset;
+    // Full-tile highlight (diamond). Slight overdraw helps cover seams.
+    const overdraw = 1.03;
+    const hw = (this.tileW / 2) * overdraw;
+    const hh = (this.tileH / 2) * overdraw;
 
     // Fill + outline
-    this.g.fillStyle(0xffffff, 0.22);
-    this.g.lineStyle(2, 0xffffff, 0.65);
+    this.g.fillStyle(0xffffff, 0.18);
+    this.g.lineStyle(2, 0xffffff, 0.55);
 
+    // Skip the start tile so we don't cover the unit
     for (let i = 1; i < path.length; i++) {
       const t = path[i];
       const p = this.tileToWorld(t);
