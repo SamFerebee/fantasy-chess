@@ -2,9 +2,7 @@ import Phaser from "phaser";
 import type { TilePicker } from "../input/TilePicker";
 import type { TileOverlay } from "../board/TileOverlay";
 import type { UnitRenderer } from "../units/UnitRenderer";
-import type { MoveRangeOverlay } from "../movement/MoveRangeOverlay";
-import { computeReachableTiles } from "../movement/reachable";
-import { BOARD } from "../board/BoardConfig";
+import type { MovementController } from "../movement/MovementController";
 
 export class SelectionController {
   private scene: Phaser.Scene;
@@ -12,22 +10,22 @@ export class SelectionController {
   private picker: TilePicker;
   private overlay: TileOverlay;
   private unitRenderer: UnitRenderer;
-  private moveOverlay: MoveRangeOverlay;
+  private movement: MovementController;
 
-  constructor(
-    scene: Phaser.Scene,
-    cam: Phaser.Cameras.Scene2D.Camera,
-    picker: TilePicker,
-    overlay: TileOverlay,
-    unitRenderer: UnitRenderer,
-    moveOverlay: MoveRangeOverlay
-  ) {
-    this.scene = scene;
-    this.cam = cam;
-    this.picker = picker;
-    this.overlay = overlay;
-    this.unitRenderer = unitRenderer;
-    this.moveOverlay = moveOverlay;
+  constructor(args: {
+    scene: Phaser.Scene;
+    cam: Phaser.Cameras.Scene2D.Camera;
+    picker: TilePicker;
+    overlay: TileOverlay;
+    unitRenderer: UnitRenderer;
+    movement: MovementController;
+  }) {
+    this.scene = args.scene;
+    this.cam = args.cam;
+    this.picker = args.picker;
+    this.overlay = args.overlay;
+    this.unitRenderer = args.unitRenderer;
+    this.movement = args.movement;
   }
 
   attach() {
@@ -42,7 +40,7 @@ export class SelectionController {
       if (hitUnit) {
         this.unitRenderer.setSelectedUnitId(hitUnit.id);
         this.overlay.setSelected(null); // unit-only highlight
-        this.moveOverlay.setSelectedUnit(hitUnit);
+        this.movement.setSelectedUnit(hitUnit);
         console.log("Selected unit:", hitUnit.id, "at", hitUnit.x, hitUnit.y);
         return;
       }
@@ -50,39 +48,21 @@ export class SelectionController {
       // 2) Tile hit
       const hitTile = this.picker.getTileAtPointer(pointer);
 
-      // 2a) If a unit is already selected and we clicked an empty reachable tile -> move
-      const selected = this.unitRenderer.getSelectedUnit();
-      if (selected && hitTile) {
-        const destOccupied = this.unitRenderer.getUnitAtTile(hitTile.x, hitTile.y);
-        if (!destOccupied) {
-          const tiles = computeReachableTiles({
-            cfg: BOARD,
-            start: { x: selected.x, y: selected.y },
-            moveRange: selected.moveRange,
-            blocked: new Set<string>(),
-          });
-
-          const reachable = tiles.some((t) => t.x === hitTile.x && t.y === hitTile.y);
-          if (reachable) {
-            this.unitRenderer.moveUnitTo(selected.id, hitTile.x, hitTile.y);
-
-            // keep unit selected; highlight only unit; refresh overlay from new position
-            this.overlay.setSelected(null);
-            this.moveOverlay.setSelectedUnit(selected);
-
-            console.log("Moved unit:", selected.id, "to", hitTile.x, hitTile.y);
-            return;
-          }
-        }
+      // 2a) If a unit is already selected, try moving to clicked tile
+      // (consumes the click if a move happens)
+      if (this.movement.tryMoveTo(hitTile)) {
+        // Keep unit-only highlight rule
+        this.overlay.setSelected(null);
+        return;
       }
 
-      // 3) If tile contains a unit, select unit only
+      // 3) If tile contains a unit, select unit only (even if click was "on tile")
       if (hitTile) {
         const unitOnTile = this.unitRenderer.getUnitAtTile(hitTile.x, hitTile.y);
         if (unitOnTile) {
           this.unitRenderer.setSelectedUnitId(unitOnTile.id);
           this.overlay.setSelected(null); // unit-only highlight
-          this.moveOverlay.setSelectedUnit(unitOnTile);
+          this.movement.setSelectedUnit(unitOnTile);
           console.log("Selected unit:", unitOnTile.id, "at", unitOnTile.x, unitOnTile.y);
           return;
         }
@@ -91,7 +71,7 @@ export class SelectionController {
       // 4) Otherwise select tile and clear unit selection / move overlay
       this.unitRenderer.setSelectedUnitId(null);
       this.overlay.setSelected(hitTile);
-      this.moveOverlay.setSelectedUnit(null);
+      this.movement.setSelectedUnit(null);
 
       if (hitTile) console.log("Selected tile:", hitTile.x, hitTile.y);
     });
