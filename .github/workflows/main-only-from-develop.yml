@@ -1,0 +1,16 @@
+name: main-only-from-develop
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure PR to main comes from develop
+        run: |
+          if [ "${{ github.head_ref }}" != "develop" ]; then
+            echo "PRs to main must come from develop."
+            exit 1
+          fi
