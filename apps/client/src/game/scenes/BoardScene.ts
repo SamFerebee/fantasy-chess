@@ -6,6 +6,7 @@ import { TilePicker } from "../input/TilePicker";
 import { createInitialUnits } from "../units/initialUnits";
 import { UnitRenderer } from "../units/UnitRenderer";
 import { SelectionController } from "../controllers/SelectionController";
+import { TurnController } from "../controllers/TurnController";
 import { MoveRangeOverlay } from "../movement/MoveRangeOverlay";
 import { MovementController } from "../movement/MovementController";
 import { PathPreviewOverlay } from "../movement/PathPreviewOverlay";
@@ -40,7 +41,7 @@ export class BoardScene extends Phaser.Scene {
     const overlay = new TileOverlay(this, cfg);
     const picker = new TilePicker(this, cfg, cam);
 
-    // Path preview overlay (discrete tile highlights) – uses iso formula centered at (0,0)
+    // Path preview overlay (full-tile highlight)
     const tileToWorld = (t: { x: number; y: number }) => ({
       x: (t.x - t.y) * (cfg.tileW / 2),
       y: (t.x + t.y) * (cfg.tileH / 2),
@@ -58,6 +59,15 @@ export class BoardScene extends Phaser.Scene {
       pathPreview,
     });
 
+    // Turn controller (HUD that cancels camera zoom)
+    const turns = new TurnController({
+      scene: this,
+      cam,
+      unitRenderer,
+      overlay,
+      movement,
+    });
+
     // Input wiring
     new SelectionController({
       scene: this,
@@ -66,6 +76,7 @@ export class BoardScene extends Phaser.Scene {
       overlay,
       unitRenderer,
       movement,
+      turns,
     }).attach();
   }
 }

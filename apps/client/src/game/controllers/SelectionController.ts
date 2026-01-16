@@ -3,6 +3,7 @@ import type { TilePicker } from "../input/TilePicker";
 import type { TileOverlay } from "../board/TileOverlay";
 import type { UnitRenderer } from "../units/UnitRenderer";
 import type { MovementController } from "../movement/MovementController";
+import type { TurnController } from "./TurnController";
 
 export class SelectionController {
   private scene: Phaser.Scene;
@@ -11,6 +12,7 @@ export class SelectionController {
   private overlay: TileOverlay;
   private unitRenderer: UnitRenderer;
   private movement: MovementController;
+  private turns: TurnController;
 
   constructor(args: {
     scene: Phaser.Scene;
@@ -19,6 +21,7 @@ export class SelectionController {
     overlay: TileOverlay;
     unitRenderer: UnitRenderer;
     movement: MovementController;
+    turns: TurnController;
   }) {
     this.scene = args.scene;
     this.cam = args.cam;
@@ -26,21 +29,34 @@ export class SelectionController {
     this.overlay = args.overlay;
     this.unitRenderer = args.unitRenderer;
     this.movement = args.movement;
+    this.turns = args.turns;
   }
 
   attach() {
     // Hover: keep hover highlight + update path preview
     this.picker.onHover((hit) => {
       this.overlay.setHovered(hit);
+
+      // Only preview when a controllable unit is selected
+      const selected = this.unitRenderer.getSelectedUnit();
+      if (!selected || !this.turns.canControlUnit(selected)) {
+        this.movement.setHoverTile(null);
+        return;
+      }
+
       this.movement.setHoverTile(hit);
     });
 
     this.scene.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
+      if (this.movement.isAnimatingMove()) return;
+
       const world = this.cam.getWorldPoint(pointer.x, pointer.y);
 
-      // 1) Direct hit on unit shape -> select unit only
+      // 1) Direct hit on unit shape -> select unit only (if controllable)
       const hitUnit = this.unitRenderer.pickUnitAtWorldPoint(world.x, world.y);
       if (hitUnit) {
+        if (!this.turns.canControlUnit(hitUnit)) return;
+
         this.unitRenderer.setSelectedUnitId(hitUnit.id);
         this.overlay.setSelected(null); // unit-only highlight
         this.movement.setSelectedUnit(hitUnit);
@@ -51,24 +67,26 @@ export class SelectionController {
       // 2) Tile hit
       const hitTile = this.picker.getTileAtPointer(pointer);
 
-      // 2a) If a unit is already selected, try moving to clicked tile
-      // (consumes the click if a move happens)
-      if (this.movement.tryMoveTo(hitTile)) {
-        // Keep unit-only highlight rule
-        this.overlay.setSelected(null);
-        // movement clears preview on move; if you change that later, this keeps it safe:
-        this.movement.setHoverTile(null);
-        return;
+      // 2a) If a unit is selected AND it's controllable, try moving
+      const selected = this.unitRenderer.getSelectedUnit();
+      if (selected && this.turns.canControlUnit(selected)) {
+        if (this.movement.tryMoveTo(hitTile)) {
+          this.overlay.setSelected(null);
+          this.movement.setHoverTile(null);
+          return;
+        }
       }
 
-      // 3) If tile contains a unit, select unit only (even if click was "on tile")
+      // 3) If tile contains a unit, select it only if controllable
       if (hitTile) {
         const unitOnTile = this.unitRenderer.getUnitAtTile(hitTile.x, hitTile.y);
         if (unitOnTile) {
+          if (!this.turns.canControlUnit(unitOnTile)) return;
+
           this.unitRenderer.setSelectedUnitId(unitOnTile.id);
-          this.overlay.setSelected(null); // unit-only highlight
+          this.overlay.setSelected(null);
           this.movement.setSelectedUnit(unitOnTile);
-          console.log("Selected unit:", unitOnTile.id, "at", unitOnTile.x, hitTile.y);
+          console.log("Selected unit:", unitOnTile.id, "at", unitOnTile.x, unitOnTile.y);
           return;
         }
       }
