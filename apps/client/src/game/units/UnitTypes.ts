@@ -1,5 +1,5 @@
 export type Team = "A" | "B";
-export type UnitShape = "circle" | "triangle";
+export type UnitShape = "circle" | "rect";
 
 export type Unit = {
   id: string;

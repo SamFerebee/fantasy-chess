@@ -5,7 +5,7 @@ import type { Unit } from "./UnitTypes";
 
 type UnitGO =
   | { unit: Unit; kind: "circle"; go: Phaser.GameObjects.Arc; radius: number }
-  | { unit: Unit; kind: "tri"; go: Phaser.GameObjects.Triangle; radius: number };
+  | { unit: Unit; kind: "rect"; go: Phaser.GameObjects.Rectangle; radius: number };
 
 export class UnitRenderer {
   private scene: Phaser.Scene;
@@ -22,37 +22,29 @@ export class UnitRenderer {
 
   create() {
     const radius = Math.max(10, Math.floor(this.cfg.tileH * 0.35));
-    const yOffset = 0;
 
     for (const u of this.units) {
       const { sx, sy } = isoToScreen(u.x, u.y, this.cfg);
       const px = sx;
-      const py = sy + yOffset;
+      const py = sy;
 
       const fill = u.team === "A" ? 0x5aa7ff : 0xff6b6b;
 
-      if (u.shape === "triangle") {
-        const tri = this.scene.add
-          .triangle(
-            px,
-            py,
-            0,
-            -radius,
-            radius,
-            radius,
-            -radius,
-            radius,
-            fill,
-            1
-          )
+      if (u.shape === "rect") {
+        // Slightly smaller than the tile diamond footprint
+        const w = Math.floor(this.cfg.tileW * 0.55);
+        const h = Math.floor(this.cfg.tileH * 0.55);
+
+        const rect = this.scene.add
+          .rectangle(px, py, w, h, fill, 1)
           .setDepth(5);
 
-        // Rotate to align better with isometric diamond
-        tri.setRotation(Phaser.Math.DegToRad(45));
-
-        this.gos.push({ unit: u, kind: "tri", go: tri, radius });
+        this.gos.push({ unit: u, kind: "rect", go: rect, radius });
       } else {
-        const circle = this.scene.add.circle(px, py, radius, fill, 1).setDepth(5);
+        const circle = this.scene.add
+          .circle(px, py, radius, fill, 1)
+          .setDepth(5);
+
         this.gos.push({ unit: u, kind: "circle", go: circle, radius });
       }
     }
@@ -72,9 +64,25 @@ export class UnitRenderer {
   pickUnitAtWorldPoint(worldX: number, worldY: number): Unit | null {
     for (let i = this.gos.length - 1; i >= 0; i--) {
       const go = this.gos[i];
-      const dx = worldX - go.go.x;
-      const dy = worldY - go.go.y;
-      if (dx * dx + dy * dy <= go.radius * go.radius) return go.unit;
+
+      if (go.kind === "rect") {
+        // Rectangle hit-test (AABB)
+        const halfW = go.go.width * go.go.scaleX * 0.5;
+        const halfH = go.go.height * go.go.scaleY * 0.5;
+        if (
+          worldX >= go.go.x - halfW &&
+          worldX <= go.go.x + halfW &&
+          worldY >= go.go.y - halfH &&
+          worldY <= go.go.y + halfH
+        ) {
+          return go.unit;
+        }
+      } else {
+        // Circle hit-test
+        const dx = worldX - go.go.x;
+        const dy = worldY - go.go.y;
+        if (dx * dx + dy * dy <= go.radius * go.radius) return go.unit;
+      }
     }
     return null;
   }

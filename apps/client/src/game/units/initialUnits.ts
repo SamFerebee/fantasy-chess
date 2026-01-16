@@ -7,7 +7,8 @@ export function createInitialUnits(): Unit[] {
     { id: "B1", team: "B", x: 7, y: 5, moveRange: 3, shape: "circle" },
     { id: "B2", team: "B", x: 6, y: 6, moveRange: 3, shape: "circle" },
 
-    // New: triangle unit with longer move range
-    { id: "A3", team: "A", x: 2, y: 7, moveRange: 5, shape: "triangle" },
+    // Rect units (one per team)
+    { id: "A3", team: "A", x: 2, y: 7, moveRange: 5, shape: "rect" },
+    { id: "B3", team: "B", x: 8, y: 3, moveRange: 5, shape: "rect" },
   ];
 }
