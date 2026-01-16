@@ -1,17 +1,14 @@
 import Phaser from "phaser";
 import type { BoardConfig } from "../board/BoardConfig";
-import { isoToScreen } from "../board/iso";
 import type { Unit } from "../units/UnitTypes";
 import type { UnitRenderer } from "../units/UnitRenderer";
 import type { MoveRangeOverlay } from "./MoveRangeOverlay";
-import { computeReachableTiles } from "./reachable";
 import type { TileCoord } from "./path";
-import { shortestPath4, tileKey } from "./path";
 import type { PathPreviewOverlay } from "./PathPreviewOverlay";
-
-function keyXY(x: number, y: number) {
-  return `${x},${y}`;
-}
+import { animateUnitAlongPath, type MoveAnimationHandle } from "./moveAnimator";
+import { keyXY } from "./movementRules";
+import { getPathForMove } from "./pathing";
+import { ReachabilityCache } from "./ReachabilityCache";
 
 export type TileHit = { x: number; y: number } | null;
 
@@ -24,12 +21,11 @@ export class MovementController {
   private moveOverlay: MoveRangeOverlay;
   private pathPreview: PathPreviewOverlay;
 
-  private reachableKeys: Set<string> | null = null;
+  private reach: ReachabilityCache;
 
   private animating = false;
-  private activeTween: Phaser.Tweens.Tween | null = null;
+  private moveAnim: MoveAnimationHandle | null = null;
 
-  // tweak to taste
   private msPerStep = 90;
 
   constructor(args: {
@@ -48,6 +44,8 @@ export class MovementController {
     this.unitRenderer = args.unitRenderer;
     this.moveOverlay = args.moveOverlay;
     this.pathPreview = args.pathPreview;
+
+    this.reach = new ReachabilityCache(this.cfg, this.units);
   }
 
   isAnimatingMove(): boolean {
@@ -57,13 +55,7 @@ export class MovementController {
   setSelectedUnit(unit: Unit | null) {
     this.moveOverlay.setSelectedUnit(unit);
     this.pathPreview.clear();
-
-    if (!unit) {
-      this.reachableKeys = null;
-      return;
-    }
-
-    this.reachableKeys = this.computeReachableKeySet(unit);
+    this.reach.setSelected(unit);
   }
 
   setHoverTile(tile: TileCoord | null): void {
@@ -73,22 +65,15 @@ export class MovementController {
     }
 
     const selected = this.unitRenderer.getSelectedUnit();
-    if (!selected) {
+    if (!selected || !tile) {
       this.pathPreview.clear();
       return;
     }
 
-    if (!tile) {
-      this.pathPreview.clear();
-      return;
-    }
+    const reachableKeys = this.reach.ensure(selected);
 
-    if (!this.reachableKeys) {
-      this.reachableKeys = this.computeReachableKeySet(selected);
-    }
-
-    const goalKey = tileKey(tile);
-    if (!this.reachableKeys.has(goalKey)) {
+    // Only show for reachable empty tiles
+    if (!reachableKeys.has(keyXY(tile.x, tile.y))) {
       this.pathPreview.clear();
       return;
     }
@@ -99,18 +84,13 @@ export class MovementController {
       return;
     }
 
-    const blocked = this.buildBlockedSet(selected.id);
-
-    const path = shortestPath4(
-      { x: selected.x, y: selected.y },
-      { x: tile.x, y: tile.y },
-      {
-        inBounds: (t) => this.isInBoundsAndNotCutout(t),
-        isBlocked: (t) => blocked.has(keyXY(t.x, t.y)),
-        maxSteps: selected.moveRange,
-        reachableKeys: this.reachableKeys,
-      }
-    );
+    const path = getPathForMove({
+      cfg: this.cfg,
+      units: this.units,
+      selected,
+      dest: tile,
+      reachableKeys,
+    });
 
     if (!path || path.length < 2) {
       this.pathPreview.clear();
@@ -121,7 +101,7 @@ export class MovementController {
   }
 
   tryMoveTo(dest: TileHit): boolean {
-    if (this.animating) return true; // consume clicks during animation
+    if (this.animating) return true;
     if (!dest) return false;
 
     const selected = this.unitRenderer.getSelectedUnit();
@@ -130,25 +110,17 @@ export class MovementController {
     const occupied = this.unitRenderer.getUnitAtTile(dest.x, dest.y);
     if (occupied) return false;
 
-    if (!this.reachableKeys) {
-      this.reachableKeys = this.computeReachableKeySet(selected);
-    }
+    const reachableKeys = this.reach.ensure(selected);
 
-    const destKey = keyXY(dest.x, dest.y);
-    if (!this.reachableKeys.has(destKey)) return false;
+    if (!reachableKeys.has(keyXY(dest.x, dest.y))) return false;
 
-    const blocked = this.buildBlockedSet(selected.id);
-
-    const path = shortestPath4(
-      { x: selected.x, y: selected.y },
-      { x: dest.x, y: dest.y },
-      {
-        inBounds: (t) => this.isInBoundsAndNotCutout(t),
-        isBlocked: (t) => blocked.has(keyXY(t.x, t.y)),
-        maxSteps: selected.moveRange,
-        reachableKeys: this.reachableKeys,
-      }
-    );
+    const path = getPathForMove({
+      cfg: this.cfg,
+      units: this.units,
+      selected,
+      dest: { x: dest.x, y: dest.y },
+      reachableKeys,
+    });
 
     if (!path || path.length < 2) return false;
 
@@ -156,101 +128,40 @@ export class MovementController {
 
     const obj = this.unitRenderer.getUnitDisplayObject(selected.id) as any;
     if (!obj || typeof obj.x !== "number" || typeof obj.y !== "number") {
-      // fallback: snap move
       this.unitRenderer.moveUnitTo(selected.id, dest.x, dest.y);
       this.moveOverlay.setSelectedUnit(selected);
-      this.reachableKeys = this.computeReachableKeySet(selected);
+      this.reach.recompute(selected);
       return true;
     }
 
-    this.animateMoveAlongPath(selected, obj, path);
+    this.startMoveAnimation(selected, obj, path);
     return true;
   }
 
-  private animateMoveAlongPath(selected: Unit, obj: any, path: TileCoord[]) {
+  private startMoveAnimation(selected: Unit, obj: any, path: TileCoord[]) {
     this.animating = true;
 
-    // cancel any in-flight tween (defensive)
-    if (this.activeTween) {
-      this.activeTween.stop();
-      this.activeTween.remove();
-      this.activeTween = null;
+    if (this.moveAnim) {
+      this.moveAnim.stop();
+      this.moveAnim = null;
     }
 
-    // Ensure starting from current tile center
-    const start = isoToScreen(selected.x, selected.y, this.cfg);
-    obj.x = start.sx;
-    obj.y = start.sy;
-
-    const stepTo = (i: number) => {
-      if (i >= path.length) {
-        // done
+    this.moveAnim = animateUnitAlongPath({
+      scene: this.scene,
+      cfg: this.cfg,
+      obj,
+      path,
+      msPerStep: this.msPerStep,
+      onDone: () => {
         const dest = path[path.length - 1];
 
-        // commit logical move at the end
         this.unitRenderer.moveUnitTo(selected.id, dest.x, dest.y);
-
-        // refresh overlay + cache from new position
         this.moveOverlay.setSelectedUnit(selected);
-        this.reachableKeys = this.computeReachableKeySet(selected);
+        this.reach.recompute(selected);
 
         this.animating = false;
-        this.activeTween = null;
-        return;
-      }
-
-      const p = isoToScreen(path[i].x, path[i].y, this.cfg);
-
-      this.activeTween = this.scene.tweens.add({
-        targets: obj,
-        x: p.sx,
-        y: p.sy,
-        duration: this.msPerStep,
-        ease: "Linear",
-        onComplete: () => stepTo(i + 1),
-      });
-    };
-
-    // start stepping from the second tile
-    stepTo(1);
-  }
-
-  private computeReachableKeySet(selected: Unit): Set<string> {
-    const blocked = this.buildBlockedSet(selected.id);
-
-    const tiles = computeReachableTiles({
-      cfg: this.cfg,
-      start: { x: selected.x, y: selected.y },
-      moveRange: selected.moveRange,
-      blocked,
+        this.moveAnim = null;
+      },
     });
-
-    const s = new Set<string>();
-    for (const t of tiles) s.add(keyXY(t.x, t.y));
-    s.add(keyXY(selected.x, selected.y));
-    return s;
-  }
-
-  private buildBlockedSet(selectedUnitId: string): Set<string> {
-    const blocked = new Set<string>();
-    for (const u of this.units) {
-      if (u.id === selectedUnitId) continue;
-      blocked.add(keyXY(u.x, u.y));
-    }
-    return blocked;
-  }
-
-  private isInBoundsAndNotCutout(t: TileCoord): boolean {
-    const { cols, rows, cornerCut } = this.cfg;
-
-    if (t.x < 0 || t.y < 0 || t.x >= cols || t.y >= rows) return false;
-    if (cornerCut <= 0) return true;
-
-    if (t.x < cornerCut && t.y < cornerCut) return false;
-    if (t.x >= cols - cornerCut && t.y < cornerCut) return false;
-    if (t.x < cornerCut && t.y >= rows - cornerCut) return false;
-    if (t.x >= cols - cornerCut && t.y >= rows - cornerCut) return false;
-
-    return true;
   }
 }
