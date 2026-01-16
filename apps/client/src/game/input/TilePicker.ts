@@ -21,7 +21,17 @@ export class TilePicker {
   }
 
   onHover(cb: (hit: TileHit) => void) {
-    this.scene.input.on("pointermove", (pointer: Phaser.Input.Pointer) => cb(this.getTileAtPointer(pointer)));
+    this.scene.input.on("pointermove", (pointer: Phaser.Input.Pointer) => {
+      const evt = pointer.event as any;
+      const pt = (pointer as any).pointerType ?? evt?.pointerType;
+
+      const isTouch = pointer.wasTouch === true || pt === "touch";
+
+      // Only suppress hover during drag for touch (mobile)
+      if (isTouch && pointer.isDown) return;
+
+      cb(this.getTileAtPointer(pointer));
+    });
   }
 
   onSelect(cb: (hit: TileHit) => void) {
