@@ -8,6 +8,7 @@ import { UnitRenderer } from "../units/UnitRenderer";
 import { SelectionController } from "../controllers/SelectionController";
 import { MoveRangeOverlay } from "../movement/MoveRangeOverlay";
 import { MovementController } from "../movement/MovementController";
+import { PathPreviewOverlay } from "../movement/PathPreviewOverlay";
 
 export class BoardScene extends Phaser.Scene {
   create() {
@@ -20,8 +21,8 @@ export class BoardScene extends Phaser.Scene {
     // Fit camera
     const cam = this.cameras.main;
     const pad = 60;
-    const boundsW = (bounds.maxX - bounds.minX) + pad * 2;
-    const boundsH = (bounds.maxY - bounds.minY) + pad * 2;
+    const boundsW = bounds.maxX - bounds.minX + pad * 2;
+    const boundsH = bounds.maxY - bounds.minY + pad * 2;
     const fitZoom = Math.min(cam.width / boundsW, cam.height / boundsH) * 0.98;
     cam.setZoom(fitZoom * cfg.zoomOutFactor);
     cam.centerOn((bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2);
@@ -39,6 +40,15 @@ export class BoardScene extends Phaser.Scene {
     const overlay = new TileOverlay(this, cfg);
     const picker = new TilePicker(this, cfg, cam);
 
+    // Tile -> world conversion for path rendering (board drawn at origin (0,0))
+    const tileToWorld = (t: { x: number; y: number }) => ({
+      x: (t.x - t.y) * (cfg.tileW / 2),
+      y: (t.x + t.y) * (cfg.tileH / 2),
+    });
+
+    // Path preview overlay (discrete tile highlights)
+    const pathPreview = new PathPreviewOverlay(this, tileToWorld, cfg.tileW, cfg.tileH);
+
     // Movement controller
     const movement = new MovementController({
       scene: this,
@@ -47,6 +57,7 @@ export class BoardScene extends Phaser.Scene {
       units,
       unitRenderer,
       moveOverlay,
+      pathPreview,
     });
 
     // Input wiring

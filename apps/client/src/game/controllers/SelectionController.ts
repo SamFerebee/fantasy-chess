@@ -29,8 +29,11 @@ export class SelectionController {
   }
 
   attach() {
-    // Hover (unchanged)
-    this.picker.onHover((hit) => this.overlay.setHovered(hit));
+    // Hover: keep hover highlight + update path preview
+    this.picker.onHover((hit) => {
+      this.overlay.setHovered(hit);
+      this.movement.setHoverTile(hit);
+    });
 
     this.scene.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
       const world = this.cam.getWorldPoint(pointer.x, pointer.y);
@@ -53,6 +56,8 @@ export class SelectionController {
       if (this.movement.tryMoveTo(hitTile)) {
         // Keep unit-only highlight rule
         this.overlay.setSelected(null);
+        // movement clears preview on move; if you change that later, this keeps it safe:
+        this.movement.setHoverTile(null);
         return;
       }
 
@@ -63,7 +68,7 @@ export class SelectionController {
           this.unitRenderer.setSelectedUnitId(unitOnTile.id);
           this.overlay.setSelected(null); // unit-only highlight
           this.movement.setSelectedUnit(unitOnTile);
-          console.log("Selected unit:", unitOnTile.id, "at", unitOnTile.x, unitOnTile.y);
+          console.log("Selected unit:", unitOnTile.id, "at", unitOnTile.x, hitTile.y);
           return;
         }
       }
@@ -72,6 +77,7 @@ export class SelectionController {
       this.unitRenderer.setSelectedUnitId(null);
       this.overlay.setSelected(hitTile);
       this.movement.setSelectedUnit(null);
+      this.movement.setHoverTile(null);
 
       if (hitTile) console.log("Selected tile:", hitTile.x, hitTile.y);
     });
