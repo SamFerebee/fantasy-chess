@@ -1,17 +1,14 @@
-// apps/client/src/movement/MovementController.ts
 import Phaser from "phaser";
 import type { BoardConfig } from "../board/BoardConfig";
 import type { Unit } from "../units/UnitTypes";
 import type { UnitRenderer } from "../units/UnitRenderer";
 import type { MoveRangeOverlay } from "./MoveRangeOverlay";
-import { computeReachableTiles } from "./reachable";
 import type { TileCoord } from "./path";
-import { shortestPath4, tileKey } from "./path";
 import type { PathPreviewOverlay } from "./PathPreviewOverlay";
-
-function keyXY(x: number, y: number) {
-  return `${x},${y}`;
-}
+import { animateUnitAlongPath, type MoveAnimationHandle } from "./moveAnimator";
+import { keyXY } from "./movementRules";
+import { getPathForMove } from "./pathing";
+import { ReachabilityCache } from "./ReachabilityCache";
 
 export type TileHit = { x: number; y: number } | null;
 
@@ -24,8 +21,12 @@ export class MovementController {
   private moveOverlay: MoveRangeOverlay;
   private pathPreview: PathPreviewOverlay;
 
-  // Cached reachability for the currently selected unit
-  private reachableKeys: Set<string> | null = null;
+  private reach: ReachabilityCache;
+
+  private animating = false;
+  private moveAnim: MoveAnimationHandle | null = null;
+
+  private msPerStep = 90;
 
   constructor(args: {
     scene: Phaser.Scene;
@@ -43,44 +44,36 @@ export class MovementController {
     this.unitRenderer = args.unitRenderer;
     this.moveOverlay = args.moveOverlay;
     this.pathPreview = args.pathPreview;
+
+    this.reach = new ReachabilityCache(this.cfg, this.units);
+  }
+
+  isAnimatingMove(): boolean {
+    return this.animating;
   }
 
   setSelectedUnit(unit: Unit | null) {
     this.moveOverlay.setSelectedUnit(unit);
     this.pathPreview.clear();
-
-    if (!unit) {
-      this.reachableKeys = null;
-      return;
-    }
-
-    this.reachableKeys = this.computeReachableKeySet(unit);
+    this.reach.setSelected(unit);
   }
 
-  /**
-   * Call this on tile hover changes (or null when leaving board).
-   * Shows shortest path from selected unit to hovered reachable tile.
-   */
   setHoverTile(tile: TileCoord | null): void {
+    if (this.animating) {
+      this.pathPreview.clear();
+      return;
+    }
+
     const selected = this.unitRenderer.getSelectedUnit();
-    if (!selected) {
+    if (!selected || !tile) {
       this.pathPreview.clear();
       return;
     }
 
-    if (!tile) {
-      this.pathPreview.clear();
-      return;
-    }
-
-    // Ensure reachability cache exists
-    if (!this.reachableKeys) {
-      this.reachableKeys = this.computeReachableKeySet(selected);
-    }
+    const reachableKeys = this.reach.ensure(selected);
 
     // Only show for reachable empty tiles
-    const goalKey = tileKey(tile);
-    if (!this.reachableKeys.has(goalKey)) {
+    if (!reachableKeys.has(keyXY(tile.x, tile.y))) {
       this.pathPreview.clear();
       return;
     }
@@ -91,18 +84,13 @@ export class MovementController {
       return;
     }
 
-    const blocked = this.buildBlockedSet(selected.id);
-
-    const path = shortestPath4(
-      { x: selected.x, y: selected.y },
-      { x: tile.x, y: tile.y },
-      {
-        inBounds: (t) => this.isInBoundsAndNotCutout(t),
-        isBlocked: (t) => blocked.has(keyXY(t.x, t.y)),
-        maxSteps: selected.moveRange,
-        reachableKeys: this.reachableKeys,
-      }
-    );
+    const path = getPathForMove({
+      cfg: this.cfg,
+      units: this.units,
+      selected,
+      dest: tile,
+      reachableKeys,
+    });
 
     if (!path || path.length < 2) {
       this.pathPreview.clear();
@@ -112,83 +100,68 @@ export class MovementController {
     this.pathPreview.setPath(path);
   }
 
-  /**
-   * Attempt to move the currently selected unit to `dest`.
-   * Returns true if a move happened (and the click was consumed).
-   */
   tryMoveTo(dest: TileHit): boolean {
+    if (this.animating) return true;
     if (!dest) return false;
 
     const selected = this.unitRenderer.getSelectedUnit();
     if (!selected) return false;
 
-    // Can't move onto occupied tile
     const occupied = this.unitRenderer.getUnitAtTile(dest.x, dest.y);
     if (occupied) return false;
 
-    // Ensure reachability cache exists and is current
-    if (!this.reachableKeys) {
-      this.reachableKeys = this.computeReachableKeySet(selected);
-    }
+    const reachableKeys = this.reach.ensure(selected);
 
-    const destKey = keyXY(dest.x, dest.y);
-    if (!this.reachableKeys.has(destKey)) return false;
+    if (!reachableKeys.has(keyXY(dest.x, dest.y))) return false;
 
-    // Apply move
-    this.unitRenderer.moveUnitTo(selected.id, dest.x, dest.y);
-
-    // Refresh overlay from new position
-    this.moveOverlay.setSelectedUnit(selected);
-
-    // Clear preview and recompute reachability from new location
-    this.pathPreview.clear();
-    this.reachableKeys = this.computeReachableKeySet(selected);
-
-    console.log("Moved unit:", selected.id, "to", dest.x, dest.y);
-    return true;
-  }
-
-  private computeReachableKeySet(selected: Unit): Set<string> {
-    const blocked = this.buildBlockedSet(selected.id);
-
-    const tiles = computeReachableTiles({
+    const path = getPathForMove({
       cfg: this.cfg,
-      start: { x: selected.x, y: selected.y },
-      moveRange: selected.moveRange,
-      blocked,
+      units: this.units,
+      selected,
+      dest: { x: dest.x, y: dest.y },
+      reachableKeys,
     });
 
-    const s = new Set<string>();
-    for (const t of tiles) s.add(keyXY(t.x, t.y));
-    s.add(keyXY(selected.x, selected.y));
-    return s;
-  }
+    if (!path || path.length < 2) return false;
 
-  private buildBlockedSet(selectedUnitId: string): Set<string> {
-    const blocked = new Set<string>();
-    for (const u of this.units) {
-      if (u.id === selectedUnitId) continue;
-      blocked.add(keyXY(u.x, u.y));
+    this.pathPreview.clear();
+
+    const obj = this.unitRenderer.getUnitDisplayObject(selected.id) as any;
+    if (!obj || typeof obj.x !== "number" || typeof obj.y !== "number") {
+      this.unitRenderer.moveUnitTo(selected.id, dest.x, dest.y);
+      this.moveOverlay.setSelectedUnit(selected);
+      this.reach.recompute(selected);
+      return true;
     }
-    return blocked;
+
+    this.startMoveAnimation(selected, obj, path);
+    return true;
   }
 
-  private isInBoundsAndNotCutout(t: TileCoord): boolean {
-    const { cols, rows, cornerCut } = this.cfg;
+  private startMoveAnimation(selected: Unit, obj: any, path: TileCoord[]) {
+    this.animating = true;
 
-    if (t.x < 0 || t.y < 0 || t.x >= cols || t.y >= rows) return false;
-    if (cornerCut <= 0) return true;
+    if (this.moveAnim) {
+      this.moveAnim.stop();
+      this.moveAnim = null;
+    }
 
-    // Remove cornerCut x cornerCut squares at each corner
-    // TL: x < cut && y < cut
-    if (t.x < cornerCut && t.y < cornerCut) return false;
-    // TR: x >= cols - cut && y < cut
-    if (t.x >= cols - cornerCut && t.y < cornerCut) return false;
-    // BL: x < cut && y >= rows - cut
-    if (t.x < cornerCut && t.y >= rows - cornerCut) return false;
-    // BR: x >= cols - cut && y >= rows - cut
-    if (t.x >= cols - cornerCut && t.y >= rows - cornerCut) return false;
+    this.moveAnim = animateUnitAlongPath({
+      scene: this.scene,
+      cfg: this.cfg,
+      obj,
+      path,
+      msPerStep: this.msPerStep,
+      onDone: () => {
+        const dest = path[path.length - 1];
 
-    return true;
+        this.unitRenderer.moveUnitTo(selected.id, dest.x, dest.y);
+        this.moveOverlay.setSelectedUnit(selected);
+        this.reach.recompute(selected);
+
+        this.animating = false;
+        this.moveAnim = null;
+      },
+    });
   }
 }

@@ -59,6 +59,14 @@ export class UnitRenderer {
     return this.units.find((u) => u.x === x && u.y === y) ?? null;
   }
 
+  /**
+   * Returns the Phaser GameObject used to render a unit (for tweening).
+   */
+  getUnitDisplayObject(unitId: string): Phaser.GameObjects.GameObject | null {
+    const go = this.gos.find((g) => g.unit.id === unitId);
+    return go ? go.go : null;
+  }
+
   moveUnitTo(unitId: string, x: number, y: number) {
     const u = this.units.find((uu) => uu.id === unitId);
     if (!u) return;
