@@ -2,6 +2,9 @@ import Phaser from "phaser";
 import type { TilePicker } from "../input/TilePicker";
 import type { TileOverlay } from "../board/TileOverlay";
 import type { UnitRenderer } from "../units/UnitRenderer";
+import type { MoveRangeOverlay } from "../movement/MoveRangeOverlay";
+import type { Unit } from "../units/UnitTypes";
+
 
 export class SelectionController {
   private scene: Phaser.Scene;
@@ -9,19 +12,23 @@ export class SelectionController {
   private picker: TilePicker;
   private overlay: TileOverlay;
   private unitRenderer: UnitRenderer;
+  private moveOverlay: MoveRangeOverlay;
+
 
   constructor(
     scene: Phaser.Scene,
     cam: Phaser.Cameras.Scene2D.Camera,
     picker: TilePicker,
     overlay: TileOverlay,
-    unitRenderer: UnitRenderer
+    unitRenderer: UnitRenderer,
+    moveOverlay: MoveRangeOverlay
   ) {
     this.scene = scene;
     this.cam = cam;
     this.picker = picker;
     this.overlay = overlay;
     this.unitRenderer = unitRenderer;
+    this.moveOverlay = moveOverlay;
   }
 
   attach() {
@@ -39,7 +46,7 @@ export class SelectionController {
 
         // Only highlight the unit (no tile highlight)
         this.overlay.setSelected(null);
-
+        this.moveOverlay.setSelectedUnit(hitUnit);
         console.log("Selected unit:", hitUnit.id, "at", hitUnit.x, hitUnit.y);
         return;
     }
@@ -55,7 +62,7 @@ export class SelectionController {
 
         // Only highlight the unit (no tile highlight)
         this.overlay.setSelected(null);
-
+        this.moveOverlay.setSelectedUnit(unitOnTile);
         console.log("Selected unit:", unitOnTile.id, "at", unitOnTile.x, unitOnTile.y);
         return;
         }
@@ -64,8 +71,8 @@ export class SelectionController {
     // 4) Otherwise select tile and clear unit selection
     this.unitRenderer.setSelectedUnitId(null);
     this.overlay.setSelected(hitTile);
+    this.moveOverlay.setSelectedUnit(null);
 
-    if (hitTile) console.log("Selected tile:", hitTile.x, hitTile.y);
     });
   }
 }
