@@ -1,51 +1,73 @@
 import type { BoardConfig } from "../board/BoardConfig";
 import type { Unit } from "../units/UnitTypes";
-import type { TileCoord } from "./path";
-import { computeReachableTiles } from "./reachable";
+import type { Tile } from "./MovementController";
 
 export function keyXY(x: number, y: number) {
   return `${x},${y}`;
 }
 
-export function buildBlockedSet(units: Unit[], selectedUnitId: string): Set<string> {
+export function isInBoundsAndNotCutout(x: number, y: number, cfg: BoardConfig): boolean {
+  if (x < 0 || y < 0 || x >= cfg.cols || y >= cfg.rows) return false;
+
+  const c = cfg.cornerCut;
+  if (c > 0) {
+    const inTL = x < c && y < c;
+    const inTR = x >= cfg.cols - c && y < c;
+    const inBL = x < c && y >= cfg.rows - c;
+    const inBR = x >= cfg.cols - c && y >= cfg.rows - c;
+    if (inTL || inTR || inBL || inBR) return false;
+  }
+
+  return true;
+}
+
+export function buildBlockedSet(units: Unit[], ignoreUnitId: string): Set<string> {
   const blocked = new Set<string>();
   for (const u of units) {
-    if (u.id === selectedUnitId) continue;
+    if (u.id === ignoreUnitId) continue;
     blocked.add(keyXY(u.x, u.y));
   }
   return blocked;
 }
 
-export function isInBoundsAndNotCutout(cfg: BoardConfig, t: TileCoord): boolean {
-  const { cols, rows, cornerCut } = cfg;
+export function computeReachableTiles(
+  start: Unit,
+  maxSteps: number,
+  cfg: BoardConfig,
+  blocked: Set<string>
+): Tile[] {
+  if (maxSteps <= 0) return [];
 
-  if (t.x < 0 || t.y < 0 || t.x >= cols || t.y >= rows) return false;
-  if (cornerCut <= 0) return true;
+  const startKey = keyXY(start.x, start.y);
 
-  if (t.x < cornerCut && t.y < cornerCut) return false;
-  if (t.x >= cols - cornerCut && t.y < cornerCut) return false;
-  if (t.x < cornerCut && t.y >= rows - cornerCut) return false;
-  if (t.x >= cols - cornerCut && t.y >= rows - cornerCut) return false;
+  const q: Array<{ x: number; y: number; d: number }> = [{ x: start.x, y: start.y, d: 0 }];
+  const seen = new Set<string>([startKey]);
 
-  return true;
-}
+  const out: Tile[] = [];
 
-export function computeReachableKeySet(args: {
-  cfg: BoardConfig;
-  selected: Unit;
-  units: Unit[];
-}): Set<string> {
-  const blocked = buildBlockedSet(args.units, args.selected.id);
+  while (q.length) {
+    const cur = q.shift()!;
+    if (cur.d > 0) out.push({ x: cur.x, y: cur.y });
+    if (cur.d === maxSteps) continue;
 
-  const tiles = computeReachableTiles({
-    cfg: args.cfg,
-    start: { x: args.selected.x, y: args.selected.y },
-    moveRange: args.selected.moveRange,
-    blocked,
-  });
+    const nbs = [
+      { x: cur.x + 1, y: cur.y },
+      { x: cur.x - 1, y: cur.y },
+      { x: cur.x, y: cur.y + 1 },
+      { x: cur.x, y: cur.y - 1 },
+    ];
 
-  const s = new Set<string>();
-  for (const t of tiles) s.add(keyXY(t.x, t.y));
-  s.add(keyXY(args.selected.x, args.selected.y));
-  return s;
+    for (const nb of nbs) {
+      if (!isInBoundsAndNotCutout(nb.x, nb.y, cfg)) continue;
+
+      const k = keyXY(nb.x, nb.y);
+      if (seen.has(k)) continue;
+      if (blocked.has(k)) continue;
+
+      seen.add(k);
+      q.push({ x: nb.x, y: nb.y, d: cur.d + 1 });
+    }
+  }
+
+  return out;
 }
