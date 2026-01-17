@@ -1,14 +1,14 @@
 import Phaser from "phaser";
-import type { TilePicker } from "../input/TilePicker";
-import type { TileOverlay } from "../board/TileOverlay";
-import type { UnitRenderer } from "../units/UnitRenderer";
-import type { MovementController } from "../movement/MovementController";
-import type { TurnController } from "./TurnController";
-import type { ActionBar } from "../ui/ActionBar";
 import type { BoardConfig } from "../board/BoardConfig";
+import type { TileOverlay } from "../board/TileOverlay";
 import type { AttackRangeOverlay } from "../combat/AttackRangeOverlay";
 import type { ProjectilePathOverlay } from "../combat/ProjectilePathOverlay";
-import type { Unit } from "../units/UnitTypes";
+import type { TilePicker } from "../input/TilePicker";
+import type { MovementController } from "../movement/MovementController";
+import type { UnitRenderer } from "../units/UnitRenderer";
+import type { ActionBar } from "../ui/ActionBar";
+import type { TurnController } from "./TurnController";
+import type { GameModel } from "../sim/GameModel";
 
 import { createOverlayModeManager } from "./selection/OverlayModeManager";
 import { createSelectionClickHandler } from "./selection/SelectionClickHandler";
@@ -29,7 +29,7 @@ export class SelectionController {
     scene: Phaser.Scene;
     cam: Phaser.Cameras.Scene2D.Camera;
     cfg: BoardConfig;
-    units: Unit[];
+    model: GameModel;
     picker: TilePicker;
     overlay: TileOverlay;
     unitRenderer: UnitRenderer;
@@ -47,9 +47,11 @@ export class SelectionController {
     this.turns = args.turns;
     this.actionBar = args.actionBar;
 
+    const getUnits = () => args.model.getUnits();
+
     this.overlayMode = createOverlayModeManager({
       cfg: args.cfg,
-      units: args.units,
+      getUnits,
       unitRenderer: this.unitRenderer,
       turns: this.turns,
       movement: this.movement,
@@ -59,11 +61,8 @@ export class SelectionController {
     });
 
     this.clickHandler = createSelectionClickHandler({
-      scene: this.scene,
-      cam: args.cam,
       cfg: args.cfg,
-      units: args.units,
-      picker: this.picker,
+      model: args.model,
       overlay: this.overlay,
       unitRenderer: this.unitRenderer,
       movement: this.movement,
@@ -74,17 +73,21 @@ export class SelectionController {
   }
 
   attach() {
+    // Mode changes update overlays (move range vs attack range).
     this.actionBar.onModeChanged((mode) => this.overlayMode.applyMode(mode));
 
+    // Hover updates the tile outline + (in attack mode) projectile path preview.
     this.picker.onHover((hit) => {
       this.overlay.setHovered(hit);
       this.overlayMode.handleHover(hit);
     });
 
-    this.scene.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
-      this.clickHandler.onPointerDown(pointer);
+    // Click selection / actions.
+    this.picker.onSelect((hit) => {
+      this.clickHandler.onTileSelected(hit);
     });
 
+    // Initialize for default action mode.
     this.overlayMode.applyMode(this.actionBar.getMode());
   }
 }

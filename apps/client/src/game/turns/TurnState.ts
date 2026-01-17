@@ -13,12 +13,10 @@ export class TurnState {
     return this.activeTeam;
   }
 
-  isTurnLockedToUnit(): boolean {
-    return this.activatedUnitId !== null;
-  }
-
-  getActivatedUnitId(): string | null {
-    return this.activatedUnitId;
+  endTurn() {
+    this.activeTeam = this.activeTeam === "A" ? "B" : "A";
+    this.activatedUnitId = null;
+    this.remainingAp.clear();
   }
 
   canControlUnit(unit: Unit): boolean {
@@ -28,53 +26,47 @@ export class TurnState {
   }
 
   getRemainingAp(unit: Unit): number {
-    if (!this.canControlUnit(unit)) return 0;
-
     const existing = this.remainingAp.get(unit.id);
-    if (existing !== undefined) return existing;
+    if (existing != null) return existing;
 
+    // Lazily initialize from unit base AP when first queried/spent this turn.
     this.remainingAp.set(unit.id, unit.actionPoints);
     return unit.actionPoints;
   }
 
-  canAct(unit: Unit): boolean {
-    return this.canControlUnit(unit) && this.getRemainingAp(unit) > 0;
-  }
-
-  spendForMove(unit: Unit, tilesMoved: number): boolean {
-    if (tilesMoved <= 0) return false;
-    if (!this.canControlUnit(unit)) return false;
-
-    const rem = this.getRemainingAp(unit);
-    if (rem < tilesMoved) return false;
-
-    // First action of the turn locks the turn to this unit.
-    if (!this.activatedUnitId) this.activatedUnitId = unit.id;
-
-    this.remainingAp.set(unit.id, rem - tilesMoved);
-    return true;
-  }
-
   /**
-   * Attacking costs 1 AP and consumes ALL remaining AP.
-   * Requires at least 1 AP remaining.
+   * General-purpose: "can take any action" (move, attack, etc.)
+   * Attack-specific checks should use canAttack().
    */
-  spendForAttack(unit: Unit): boolean {
+  canAct(unit: Unit): boolean {
     if (!this.canControlUnit(unit)) return false;
-
-    const rem = this.getRemainingAp(unit);
-    if (rem < 1) return false;
-
-    // First action of the turn locks the turn to this unit.
-    if (!this.activatedUnitId) this.activatedUnitId = unit.id;
-
-    this.remainingAp.set(unit.id, 0);
-    return true;
+    return this.getRemainingAp(unit) > 0;
   }
 
-  endTurn() {
-    this.activeTeam = this.activeTeam === "A" ? "B" : "A";
-    this.activatedUnitId = null;
-    this.remainingAp.clear();
+  canAttack(unit: Unit): boolean {
+    if (!this.canControlUnit(unit)) return false;
+    return this.getRemainingAp(unit) >= unit.attack.apCost;
+  }
+
+  spendForMove(unit: Unit, tilesMoved: number) {
+    if (!this.canControlUnit(unit)) return;
+    const rem = this.getRemainingAp(unit);
+    const next = Math.max(0, rem - Math.max(0, tilesMoved));
+    this.remainingAp.set(unit.id, next);
+    if (!this.activatedUnitId) this.activatedUnitId = unit.id;
+  }
+
+  spendForAttack(unit: Unit) {
+    if (!this.canControlUnit(unit)) return;
+
+    const rem = this.getRemainingAp(unit);
+
+    if (unit.attack.consumesRemainingAp) {
+      this.remainingAp.set(unit.id, 0);
+    } else {
+      this.remainingAp.set(unit.id, Math.max(0, rem - Math.max(0, unit.attack.apCost)));
+    }
+
+    if (!this.activatedUnitId) this.activatedUnitId = unit.id;
   }
 }

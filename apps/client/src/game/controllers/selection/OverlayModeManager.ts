@@ -16,7 +16,7 @@ type Tile = { x: number; y: number } | null;
 
 export function createOverlayModeManager(args: {
   cfg: BoardConfig;
-  units: Unit[];
+  getUnits: () => Unit[];
   unitRenderer: UnitRenderer;
   turns: TurnController;
   movement: MovementController;
@@ -27,7 +27,6 @@ export function createOverlayModeManager(args: {
   const applyMode = (mode: ActionMode) => {
     const selected = args.unitRenderer.getSelectedUnit();
 
-    // Always clear projectile path unless we are actively in attack mode with a ranged unit + hover
     args.projectilePathOverlay.clear();
 
     if (!selected || !args.turns.canControlUnit(selected)) {
@@ -44,7 +43,6 @@ export function createOverlayModeManager(args: {
       return;
     }
 
-    // attack mode
     args.movement.setHoverTile(null);
     args.movement.setMoveRangeEnabled(false);
 
@@ -62,7 +60,6 @@ export function createOverlayModeManager(args: {
   const handleHover = (hit: Tile) => {
     const selected = args.unitRenderer.getSelectedUnit();
 
-    // Default: clear projectile path unless we redraw it below
     args.projectilePathOverlay.clear();
 
     if (!selected || !args.turns.canActWithUnit(selected)) {
@@ -72,30 +69,26 @@ export function createOverlayModeManager(args: {
 
     const mode = args.actionBar.getMode();
 
-    // Move hover/path preview
     if (mode === "move") {
       args.movement.setHoverTile(hit);
       return;
     }
 
-    // Attack hover: only projectile/ranged gets a path preview
     if (mode === "attack") {
       if (!hit) return;
       if (selected.attackType !== "ranged") return;
 
-      // must be in bounds and within projectile range
       if (!isInBoundsAndNotCutout(hit.x, hit.y, args.cfg)) return;
 
       const range = Math.max(0, selected.attackRange);
       const dist = Math.abs(selected.x - hit.x) + Math.abs(selected.y - hit.y);
       if (dist < 1 || dist > range) return;
 
-      const path = computeProjectilePath(selected, hit, args.units);
+      const path = computeProjectilePath(selected, hit, args.getUnits());
       args.projectilePathOverlay.setPath(path);
       return;
     }
 
-    // fallback
     args.movement.setHoverTile(null);
   };
 

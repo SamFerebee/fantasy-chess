@@ -1,33 +1,64 @@
-import type { Unit } from "../units/UnitTypes";
+import type { AttackProfile, Unit } from "../units/UnitTypes";
 import { isAdjacent4Way } from "../rules/adjacency";
 
 export type AttackResult =
   | { ok: false; reason: "outOfRange" }
   | { ok: true; killed: boolean; hit: Unit; damageDealt: number; targetHPAfter: number };
 
+function getPrimaryRangeFromAttack(attack: AttackProfile): number {
+  switch (attack.kind) {
+    case "melee_adjacent":
+      return 1;
+
+    case "projectile_blockable_single":
+    case "projectile_unblockable_single":
+    case "line_hit_all":
+      return Math.max(0, attack.range);
+
+    case "pattern_shot":
+      return Math.max(0, attack.maxRange);
+
+    case "quake_aoe":
+      return 0;
+  }
+}
+
 export class CombatResolver {
   /**
-   * Current behavior:
-   * - melee: must be adjacent (4-way)
-   * - ranged: must be within attacker.attackRange (Manhattan)
-   * - ranged LOS: first unit encountered on the line is hit (can be friendly)
-   * - damage: apply flat mitigation via armor
+   * Current implemented behaviors:
+   * - melee_adjacent: must be adjacent (4-way)
+   * - projectile_blockable_single: must be within range gate (Manhattan); first unit on line is hit (can be friendly)
+   * - projectile_unblockable_single: must be within range gate (Manhattan); target is hit directly (ignores blockers)
+   *
+   * NOTE: other `AttackProfile.kind` values exist for future-proofing but are not resolved by this method yet.
    */
   tryAttack(attacker: Unit, target: Unit, units: Unit[]): AttackResult {
-    // Melee: must be adjacent (4-way)
-    if (attacker.attackType === "melee") {
+    const atk = attacker.attack;
+
+    // Melee adjacency
+    if (atk.kind === "melee_adjacent") {
       if (!isAdjacent4Way(attacker, target)) return { ok: false, reason: "outOfRange" };
       return this.applyDamage(attacker, target);
     }
 
-    // Ranged: within manhattan range (read from unit)
-    const range = Math.max(0, attacker.attackRange);
+    // Range gate (Manhattan) for the currently supported targeted attacks
+    const range = getPrimaryRangeFromAttack(atk);
     const dist = Math.abs(attacker.x - target.x) + Math.abs(attacker.y - target.y);
     if (dist < 1 || dist > range) return { ok: false, reason: "outOfRange" };
 
-    // Projectile line-of-sight: first unit on the line is hit
-    const hit = firstUnitOnLine(attacker, target, units) ?? target;
-    return this.applyDamage(attacker, hit);
+    // Projectile (blockable): first unit on the line wins
+    if (atk.kind === "projectile_blockable_single") {
+      const hit = firstUnitOnLine(attacker, target, units) ?? target;
+      return this.applyDamage(attacker, hit);
+    }
+
+    // Projectile (unblockable): ignore blockers and hit the intended target
+    if (atk.kind === "projectile_unblockable_single") {
+      return this.applyDamage(attacker, target);
+    }
+
+    // Not implemented in this resolver API yet (needs tile targeting / multi-hit return types).
+    return { ok: false, reason: "outOfRange" };
   }
 
   private applyDamage(attacker: Unit, target: Unit): AttackResult {

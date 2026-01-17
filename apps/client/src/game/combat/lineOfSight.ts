@@ -5,27 +5,39 @@ function keyXY(x: number, y: number) {
   return `${x},${y}`;
 }
 
+export type ProjectilePathOptions = {
+  /**
+   * If true (default), stop the returned path at the first unit encountered (excluding attacker).
+   * If false, return the full Bresenham line to the target tile regardless of intervening units.
+   */
+  stopOnUnit?: boolean;
+};
+
 /**
  * Projectile path from attacker -> target tile using Bresenham.
- * Stops at the first unit encountered (can be friendly) and includes that tile.
- * Returns an array including the attacker tile at index 0.
+ * Default behavior:
+ * - Stops at the first unit encountered (can be friendly) and includes that tile.
+ * - Returns an array including the attacker tile at index 0.
  */
 export function computeProjectilePath(
   attacker: Pick<Unit, "id" | "x" | "y">,
   target: TileCoord,
-  units: Unit[]
+  units: Unit[],
+  opts: ProjectilePathOptions = {}
 ): TileCoord[] {
+  const stopOnUnit = opts.stopOnUnit ?? true;
+
   const byPos = new Map<string, Unit>();
   for (const u of units) byPos.set(keyXY(u.x, u.y), u);
 
   const line = bresenham(attacker.x, attacker.y, target.x, target.y);
 
-  // Stop at first blocker (excluding attacker), inclusive.
   const out: TileCoord[] = [];
   for (let i = 0; i < line.length; i++) {
     const p = line[i];
     out.push(p);
 
+    if (!stopOnUnit) continue;
     if (i === 0) continue;
 
     const u = byPos.get(keyXY(p.x, p.y));
