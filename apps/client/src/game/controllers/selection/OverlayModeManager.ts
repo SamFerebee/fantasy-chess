@@ -14,8 +14,6 @@ import { isInBoundsAndNotCutout } from "../../movement/movementRules";
 
 type Tile = { x: number; y: number } | null;
 
-const PROJECTILE_RANGE = 5;
-
 export function createOverlayModeManager(args: {
   cfg: BoardConfig;
   units: Unit[];
@@ -88,8 +86,9 @@ export function createOverlayModeManager(args: {
       // must be in bounds and within projectile range
       if (!isInBoundsAndNotCutout(hit.x, hit.y, args.cfg)) return;
 
+      const range = Math.max(0, selected.attackRange);
       const dist = Math.abs(selected.x - hit.x) + Math.abs(selected.y - hit.y);
-      if (dist < 1 || dist > PROJECTILE_RANGE) return;
+      if (dist < 1 || dist > range) return;
 
       const path = computeProjectilePath(selected, hit, args.units);
       args.projectilePathOverlay.setPath(path);

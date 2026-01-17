@@ -3,11 +3,8 @@ import type { Unit } from "../units/UnitTypes";
 import type { TileCoord } from "../movement/path";
 import { isInBoundsAndNotCutout } from "../movement/movementRules";
 
-const MELEE_RANGE = 1;
-const RANGED_RANGE = 5; // Manhattan distance
-
 export function getAttackRangeForUnit(unit: Unit): number {
-  return unit.attackType === "melee" ? MELEE_RANGE : RANGED_RANGE;
+  return Math.max(0, unit.attackRange);
 }
 
 /**
