@@ -13,6 +13,7 @@ import { PathPreviewOverlay } from "../movement/PathPreviewOverlay";
 import { ActionBar } from "../ui/ActionBar";
 import { AttackRangeOverlay } from "../combat/AttackRangeOverlay";
 import { ProjectilePathOverlay } from "../combat/ProjectilePathOverlay";
+import { UnitInfoHud } from "../ui/UnitInfoHud";
 
 export class BoardScene extends Phaser.Scene {
   create() {
@@ -74,7 +75,16 @@ export class BoardScene extends Phaser.Scene {
       onEndTurn: () => turns.endTurn(),
     });
 
-    this.events.on("postupdate", () => actionBar.updatePosition());
+    const unitInfoHud = new UnitInfoHud({ scene: this, cam });
+
+    this.events.on("postupdate", () => {
+      actionBar.updatePosition();
+
+      const selected = unitRenderer.getSelectedUnit();
+      const remainingAp = selected ? turns.getRemainingActionPoints(selected) : undefined;
+      unitInfoHud.setUnit(selected, remainingAp);
+      unitInfoHud.updatePosition();
+    });
 
     new SelectionController({
       scene: this,

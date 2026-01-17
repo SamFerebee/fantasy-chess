@@ -129,13 +129,10 @@ export class TurnController {
   }
 
   private refreshHud() {
-    const selected = this.unitRenderer.getSelectedUnit();
     const team = this.state.getActiveTeam();
-    const apText =
-      selected && this.canControlUnit(selected)
-        ? `\nSelected AP: ${this.state.getRemainingAp(selected)}`
-        : "";
 
-    this.hud.setTurnInfo(team, apText);
+    // Turn HUD only shows which team's turn it is.
+    // Per-unit stats (including current/max AP) are displayed in UnitInfoHud.
+    this.hud.setTurnInfo(team, "");
   }
 }
