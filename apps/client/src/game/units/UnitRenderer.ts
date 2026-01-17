@@ -59,6 +59,11 @@ export class UnitRenderer {
     return this.units.find((u) => u.x === x && u.y === y) ?? null;
   }
 
+  getUnitDisplayObject(unitId: string): Phaser.GameObjects.GameObject | null {
+    const go = this.gos.find((g) => g.unit.id === unitId);
+    return go ? go.go : null;
+  }
+
   moveUnitTo(unitId: string, x: number, y: number) {
     const u = this.units.find((uu) => uu.id === unitId);
     if (!u) return;
@@ -72,6 +77,21 @@ export class UnitRenderer {
     if (!go) return;
 
     go.go.setPosition(sx, sy);
+  }
+
+  removeUnit(unitId: string) {
+    const goIdx = this.gos.findIndex((g) => g.unit.id === unitId);
+    if (goIdx !== -1) {
+      this.gos[goIdx].go.destroy();
+      this.gos.splice(goIdx, 1);
+    }
+
+    const uIdx = this.units.findIndex((u) => u.id === unitId);
+    if (uIdx !== -1) this.units.splice(uIdx, 1);
+
+    if (this.selectedUnitId === unitId) this.selectedUnitId = null;
+
+    this.applySelectionVisuals();
   }
 
   pickUnitAtWorldPoint(worldX: number, worldY: number): Unit | null {
