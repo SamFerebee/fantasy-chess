@@ -2,7 +2,7 @@ import Phaser from "phaser";
 import type { BoardConfig } from "../board/BoardConfig";
 import { isoToScreen } from "../board/iso";
 import type { Unit } from "../units/UnitTypes";
-import type { Tile } from "./MovementController";
+import type { TileCoord } from "./path";
 
 export class MoveRangeOverlay {
   private scene: Phaser.Scene;
@@ -15,7 +15,7 @@ export class MoveRangeOverlay {
     this.gfx = this.scene.add.graphics().setDepth(40);
   }
 
-  setSelectedUnit(_unit: Unit | null, reachableTiles: Tile[]) {
+  setSelectedUnit(_unit: Unit | null, reachableTiles: TileCoord[]) {
     this.gfx.clear();
 
     if (!reachableTiles || reachableTiles.length === 0) return;

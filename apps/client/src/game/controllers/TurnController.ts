@@ -3,9 +3,10 @@ import type { TileOverlay } from "../board/TileOverlay";
 import type { UnitRenderer } from "../units/UnitRenderer";
 import type { MovementController } from "../movement/MovementController";
 import type { Unit, Team } from "../units/UnitTypes";
-import { TurnState } from "../turns/TurnState";
 import { TurnHud } from "../ui/TurnHud";
-import { CombatResolver } from "../combat/CombatResolver";
+import type { GameModel } from "../sim/GameModel";
+import type { ApplyResult } from "../sim/GameActions";
+import { CombatFeedback } from "../ui/CombatFeedback";
 
 export class TurnController {
   private scene: Phaser.Scene;
@@ -14,15 +15,14 @@ export class TurnController {
   private overlay: TileOverlay;
   private movement: MovementController;
 
-  // Needed for projectile LoS (blockers)
-  private units: Unit[];
+  /**
+   * Simulation/model container (no Phaser dependencies).
+   * Owns: AP rules, turn switching, attacks, and unit removal.
+   */
+  private model: GameModel;
 
-  private state = new TurnState();
   private hud: TurnHud;
-  private combat = new CombatResolver();
-
-  // When a move consumes the last AP, we auto-end AFTER the move tween finishes.
-  private pendingAutoEndAfterMove = false;
+  private feedback: CombatFeedback;
 
   constructor(args: {
     scene: Phaser.Scene;
@@ -30,109 +30,112 @@ export class TurnController {
     unitRenderer: UnitRenderer;
     overlay: TileOverlay;
     movement: MovementController;
-    units: Unit[];
+    model: GameModel;
   }) {
     this.scene = args.scene;
     this.cam = args.cam;
     this.unitRenderer = args.unitRenderer;
     this.overlay = args.overlay;
     this.movement = args.movement;
-    this.units = args.units;
+    this.model = args.model;
 
     this.hud = new TurnHud({ scene: this.scene, cam: this.cam });
+    this.feedback = new CombatFeedback({ scene: this.scene, unitRenderer: this.unitRenderer });
 
     this.scene.input.keyboard?.on("keydown-E", () => this.endTurn());
     this.scene.events.on("postupdate", () => this.hud.updatePosition());
-
-    this.scene.events.on("move:complete", () => {
-      if (this.pendingAutoEndAfterMove) {
-        this.pendingAutoEndAfterMove = false;
-        this.endTurn();
-      } else {
-        this.refreshHud();
-      }
-    });
 
     this.refreshHud();
     this.hud.updatePosition();
   }
 
+  /** Call every frame (cheap) to keep HUD in sync with model state. */
+  update() {
+    this.refreshHud();
+  }
+
   getActiveTeam(): Team {
-    return this.state.getActiveTeam();
+    return this.model.getActiveTeam();
   }
 
   canControlUnit(unit: Unit): boolean {
-    return this.state.canControlUnit(unit);
+    return this.model.canControlUnit(unit);
   }
 
   getRemainingActionPoints(unit: Unit): number {
-    return this.state.getRemainingAp(unit);
+    return this.model.getRemainingActionPoints(unit);
   }
 
   canActWithUnit(unit: Unit): boolean {
-    if (!this.state.canAct(unit)) return false;
+    if (!this.model.canActWithUnit(unit)) return false;
     if (this.movement.isAnimatingMove()) return false;
     return true;
   }
 
-  spendForMove(unit: Unit, tilesMoved: number): boolean {
-    const ok = this.state.spendForMove(unit, tilesMoved);
-    if (!ok) return false;
+  /**
+   * Applies an attack (model authoritative), then applies UI side-effects:
+   * - hit feedback (flash + floating damage number)
+   * - death feedback (fade/shrink) then destroy unit visuals
+   * - clear selection/overlays if the action ended the turn
+   */
+  tryAttackUnit(attacker: Unit, target: Unit): ApplyResult {
+    if (!this.canActWithUnit(attacker)) return { ok: false, reason: "notYourTurn" };
 
-    this.refreshHud();
+    const res = this.model.applyAction({ type: "attackUnit", attackerId: attacker.id, targetId: target.id });
+    if (!res.ok) return res;
 
-    if (this.state.getRemainingAp(unit) <= 0) {
-      if (this.movement.isAnimatingMove()) {
-        this.pendingAutoEndAfterMove = true;
-      } else {
-        this.endTurn();
+    // Feedback loop:
+    // - If the attack dealt damage: show that number on the hit unit
+    // - If the attack dealt 0 damage (e.g., armor): show 0 on the hit unit
+    // - If the hit unit died: play death anim, then destroy visuals
+    const damagedTargets = new Set<string>();
+
+    for (const ev of res.events) {
+      if (ev.type === "unitDamaged") {
+        damagedTargets.add(ev.targetId);
+        this.feedback.playHit(ev.targetId, ev.amount);
       }
     }
 
-    return true;
+    for (const ev of res.events) {
+      if (ev.type === "unitHpChanged") {
+        if (!damagedTargets.has(ev.unitId)) {
+          // No unitDamaged event means damage was 0 for this hit.
+          this.feedback.playHit(ev.unitId, 0);
+        }
+      }
+    }
+
+    for (const ev of res.events) {
+      if (ev.type === "unitRemoved") {
+        this.feedback.playDeath(ev.unitId, () => this.unitRenderer.destroyUnitVisual(ev.unitId));
+      }
+    }
+
+    // If the model ended the turn, clear selection/overlays.
+    const ended = res.events.some((e) => e.type === "turnEnded");
+    if (ended) this.clearSelectionAndOverlays();
+
+    return res;
   }
 
   endTurn() {
     if (this.movement.isAnimatingMove()) return;
 
-    this.pendingAutoEndAfterMove = false;
-    this.state.endTurn();
-
-    this.unitRenderer.setSelectedUnitId(null);
-    this.overlay.setSelected(null);
-    this.movement.setSelectedUnit(null);
-    this.movement.setHoverTile(null);
-
-    this.refreshHud();
+    this.model.applyAction({ type: "endTurn" });
+    this.clearSelectionAndOverlays();
   }
 
-  /**
-   * Attack:
-   * - requires at least 1 AP remaining
-   * - costs 1 AP and consumes all remaining AP
-   * - projectile ranged uses LoS; may hit a blocking unit instead (can be friendly)
-   */
-  tryAttack(attacker: Unit, target: Unit): boolean {
-    if (!this.canActWithUnit(attacker)) return false;
-
-    const res = this.combat.tryAttack(attacker, target, this.units);
-    if (!res.ok) return false;
-
-    if (!this.state.spendForAttack(attacker)) return false;
-
-    // Remove the actual hit unit (target or blocker)
-    this.unitRenderer.removeUnit(res.hit.id);
-
+  private clearSelectionAndOverlays() {
+    this.unitRenderer.setSelectedUnitId(null);
+    this.overlay.setSelected(null);
+    this.movement.setSelectedUnitId(null);
+    this.movement.setHoverTile(null);
     this.refreshHud();
-    this.endTurn();
-    return true;
   }
 
   private refreshHud() {
-    const team = this.state.getActiveTeam();
-
-    // Turn HUD only shows which team's turn it is.
-    // Per-unit stats (including current/max AP) are displayed in UnitInfoHud.
+    const team = this.model.getActiveTeam();
     this.hud.setTurnInfo(team, "");
   }
 }

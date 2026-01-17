@@ -14,6 +14,7 @@ import { ActionBar } from "../ui/ActionBar";
 import { AttackRangeOverlay } from "../combat/AttackRangeOverlay";
 import { ProjectilePathOverlay } from "../combat/ProjectilePathOverlay";
 import { UnitInfoHud } from "../ui/UnitInfoHud";
+import { GameModel } from "../sim/GameModel";
 
 export class BoardScene extends Phaser.Scene {
   create() {
@@ -31,10 +32,16 @@ export class BoardScene extends Phaser.Scene {
     cam.centerOn((bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2);
 
     const units = createInitialUnits();
-    const unitRenderer = new UnitRenderer(this, cfg, units);
+
+    // Central simulation/model (Phaser-free)
+    const model = new GameModel(units);
+
+    // Rendering
+    const unitRenderer = new UnitRenderer(this, cfg, model.getUnits());
     unitRenderer.create();
 
-    const moveOverlay = new MoveRangeOverlay(this, cfg, units);
+    // Overlays / input
+    const moveOverlay = new MoveRangeOverlay(this, cfg, model.getUnits());
     moveOverlay.setSelectedUnit(null, []);
 
     const attackOverlay = new AttackRangeOverlay(this, cfg);
@@ -54,10 +61,10 @@ export class BoardScene extends Phaser.Scene {
       scene: this,
       cam,
       cfg,
-      units,
       unitRenderer,
       moveOverlay,
       pathPreview,
+      model,
     });
 
     const turns = new TurnController({
@@ -66,7 +73,7 @@ export class BoardScene extends Phaser.Scene {
       unitRenderer,
       overlay,
       movement,
-      units,
+      model,
     });
 
     const actionBar = new ActionBar({
@@ -79,6 +86,7 @@ export class BoardScene extends Phaser.Scene {
 
     this.events.on("postupdate", () => {
       actionBar.updatePosition();
+      turns.update();
 
       const selected = unitRenderer.getSelectedUnit();
       const remainingAp = selected ? turns.getRemainingActionPoints(selected) : undefined;
@@ -90,7 +98,7 @@ export class BoardScene extends Phaser.Scene {
       scene: this,
       cam,
       cfg,
-      units,
+      model,
       picker,
       overlay,
       unitRenderer,

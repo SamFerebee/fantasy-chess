@@ -64,13 +64,7 @@ export class UnitRenderer {
     return go ? go.go : null;
   }
 
-  moveUnitTo(unitId: string, x: number, y: number) {
-    const u = this.units.find((uu) => uu.id === unitId);
-    if (!u) return;
-
-    u.x = x;
-    u.y = y;
-
+  setUnitVisualTile(unitId: string, x: number, y: number) {
     const { sx, sy } = isoToScreen(x, y, this.cfg);
 
     const go = this.gos.find((g) => g.unit.id === unitId);
@@ -79,18 +73,14 @@ export class UnitRenderer {
     go.go.setPosition(sx, sy);
   }
 
-  removeUnit(unitId: string) {
-    const goIdx = this.gos.findIndex((g) => g.unit.id === unitId);
-    if (goIdx !== -1) {
-      this.gos[goIdx].go.destroy();
-      this.gos.splice(goIdx, 1);
-    }
+  destroyUnitVisual(unitId: string) {
+    const idx = this.gos.findIndex((g) => g.unit.id === unitId);
+    if (idx === -1) return;
 
-    const uIdx = this.units.findIndex((u) => u.id === unitId);
-    if (uIdx !== -1) this.units.splice(uIdx, 1);
+    this.gos[idx].go.destroy();
+    this.gos.splice(idx, 1);
 
     if (this.selectedUnitId === unitId) this.selectedUnitId = null;
-
     this.applySelectionVisuals();
   }
 

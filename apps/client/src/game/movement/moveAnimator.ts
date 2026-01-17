@@ -1,14 +1,13 @@
 import Phaser from "phaser";
-import type { Tile } from "./MovementController";
+import type { TileCoord } from "./path";
 
 export function animateUnitAlongPath(
   scene: Phaser.Scene,
   go: Phaser.GameObjects.GameObject,
-  path: Tile[],
-  tileToWorld: (t: Tile) => { x: number; y: number },
+  path: TileCoord[],
+  tileToWorld: (t: TileCoord) => { x: number; y: number },
   onComplete: () => void
 ) {
-  // path includes start tile; we animate through subsequent tiles
   const steps = path.slice(1);
   if (steps.length === 0) {
     onComplete();
