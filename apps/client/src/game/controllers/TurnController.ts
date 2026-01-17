@@ -42,7 +42,7 @@ export class TurnController {
     this.hud = new TurnHud({ scene: this.scene, cam: this.cam });
     this.feedback = new CombatFeedback({ scene: this.scene, unitRenderer: this.unitRenderer });
 
-    this.scene.input.keyboard?.on("keydown-E", () => this.endTurn());
+    // Removed: pressing E no longer ends the turn.
     this.scene.events.on("postupdate", () => this.hud.updatePosition());
 
     this.refreshHud();
