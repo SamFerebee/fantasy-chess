@@ -1,31 +1,34 @@
 import Phaser from "phaser";
 import type { BoardConfig } from "../board/BoardConfig";
 import { isoToScreen } from "../board/iso";
+import type { TileCoord } from "../movement/path";
 import type { Unit } from "../units/UnitTypes";
-import type { Tile } from "./MovementController";
 
-export class MoveRangeOverlay {
-  private scene: Phaser.Scene;
+export class AttackRangeOverlay {
   private cfg: BoardConfig;
   private gfx: Phaser.GameObjects.Graphics;
 
-  constructor(scene: Phaser.Scene, cfg: BoardConfig, _units: Unit[]) {
-    this.scene = scene;
+  constructor(scene: Phaser.Scene, cfg: BoardConfig) {
     this.cfg = cfg;
-    this.gfx = this.scene.add.graphics().setDepth(40);
+    this.gfx = scene.add.graphics().setDepth(45);
   }
 
-  setSelectedUnit(_unit: Unit | null, reachableTiles: Tile[]) {
+  setSelectedUnit(_unit: Unit | null, tiles: TileCoord[]) {
     this.gfx.clear();
 
-    if (!reachableTiles || reachableTiles.length === 0) return;
+    if (!tiles || tiles.length === 0) return;
 
-    this.gfx.fillStyle(0x66ff66, 0.18);
+    // red, see-through
+    this.gfx.fillStyle(0xff0000, 0.18);
 
-    for (const t of reachableTiles) {
+    for (const t of tiles) {
       const { sx, sy } = isoToScreen(t.x, t.y, this.cfg);
       this.drawDiamond(sx, sy, this.cfg.tileW * 0.5, this.cfg.tileH * 0.5);
     }
+  }
+
+  clear() {
+    this.gfx.clear();
   }
 
   private drawDiamond(cx: number, cy: number, halfW: number, halfH: number) {

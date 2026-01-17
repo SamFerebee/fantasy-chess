@@ -1,53 +1,25 @@
-import type { BoardConfig } from "../board/BoardConfig";
-import type { Unit } from "../units/UnitTypes";
-import { computeReachableKeySet } from "./movementRules";
-
 export class ReachabilityCache {
-  private cfg: BoardConfig;
-  private units: Unit[];
+  private selectedId: string | null = null;
+  private budgetBySelected = new Map<string, number>();
+  private reachableKeysBySelected = new Map<string, Set<string>>();
 
-  private selectedUnitId: string | null = null;
-  private reachableKeys: Set<string> | null = null;
-
-  constructor(cfg: BoardConfig, units: Unit[]) {
-    this.cfg = cfg;
-    this.units = units;
+  clear() {
+    this.selectedId = null;
+    this.budgetBySelected.clear();
+    this.reachableKeysBySelected.clear();
   }
 
-  clear(): void {
-    this.selectedUnitId = null;
-    this.reachableKeys = null;
+  set(unitId: string, budget: number, keys: string[]) {
+    this.selectedId = unitId;
+    this.budgetBySelected.set(unitId, budget);
+    this.reachableKeysBySelected.set(unitId, new Set(keys));
   }
 
-  setSelected(unit: Unit | null): void {
-    if (!unit) {
-      this.clear();
-      return;
-    }
-
-    if (this.selectedUnitId === unit.id && this.reachableKeys) return;
-
-    this.selectedUnitId = unit.id;
-    this.recompute(unit);
+  getBudgetForSelected(unitId: string): number {
+    return this.budgetBySelected.get(unitId) ?? 0;
   }
 
-  recompute(unit: Unit): void {
-    this.selectedUnitId = unit.id;
-    this.reachableKeys = computeReachableKeySet({
-      cfg: this.cfg,
-      selected: unit,
-      units: this.units,
-    });
-  }
-
-  ensure(unit: Unit): Set<string> {
-    if (this.selectedUnitId !== unit.id || !this.reachableKeys) {
-      this.recompute(unit);
-    }
-    return this.reachableKeys!;
-  }
-
-  get(): Set<string> | null {
-    return this.reachableKeys;
+  getKeysForSelected(unitId: string): Set<string> | null {
+    return this.reachableKeysBySelected.get(unitId) ?? null;
   }
 }

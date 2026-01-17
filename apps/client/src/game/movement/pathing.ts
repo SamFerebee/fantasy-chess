@@ -1,33 +1,68 @@
 import type { BoardConfig } from "../board/BoardConfig";
 import type { Unit } from "../units/UnitTypes";
-import type { TileCoord } from "./path";
-import { shortestPath4, tileKey } from "./path";
-import { buildBlockedSet, isInBoundsAndNotCutout, keyXY } from "./movementRules";
+import type { Tile } from "./MovementController";
+import { isInBoundsAndNotCutout, keyXY } from "./movementRules";
 
-/**
- * Returns the shortest path from selected -> dest within movement constraints,
- * or null if unreachable.
- */
-export function getPathForMove(args: {
-  cfg: BoardConfig;
-  units: Unit[];
-  selected: Unit;
-  dest: TileCoord;
-  reachableKeys: Set<string>;
-}): TileCoord[] | null {
-  const goalKey = tileKey(args.dest);
-  if (!args.reachableKeys.has(goalKey)) return null;
+export function getPathForMove(
+  start: Unit,
+  dest: Tile,
+  maxSteps: number,
+  cfg: BoardConfig,
+  blocked: Set<string>
+): Tile[] {
+  if (maxSteps <= 0) return [];
+  if (start.x === dest.x && start.y === dest.y) return [];
 
-  const blocked = buildBlockedSet(args.units, args.selected.id);
+  const destKey = keyXY(dest.x, dest.y);
 
-  return shortestPath4(
-    { x: args.selected.x, y: args.selected.y },
-    { x: args.dest.x, y: args.dest.y },
-    {
-      inBounds: (t) => isInBoundsAndNotCutout(args.cfg, t),
-      isBlocked: (t) => blocked.has(keyXY(t.x, t.y)),
-      maxSteps: args.selected.moveRange,
-      reachableKeys: args.reachableKeys,
+  const q: Array<{ x: number; y: number }> = [{ x: start.x, y: start.y }];
+  const prev = new Map<string, string | null>();
+  const dist = new Map<string, number>();
+
+  const startKey = keyXY(start.x, start.y);
+  prev.set(startKey, null);
+  dist.set(startKey, 0);
+
+  while (q.length) {
+    const cur = q.shift()!;
+    const curKey = keyXY(cur.x, cur.y);
+    const curD = dist.get(curKey) ?? 0;
+
+    if (curKey === destKey) break;
+    if (curD === maxSteps) continue;
+
+    const nbs = [
+      { x: cur.x + 1, y: cur.y },
+      { x: cur.x - 1, y: cur.y },
+      { x: cur.x, y: cur.y + 1 },
+      { x: cur.x, y: cur.y - 1 },
+    ];
+
+    for (const nb of nbs) {
+      if (!isInBoundsAndNotCutout(nb.x, nb.y, cfg)) continue;
+      const k = keyXY(nb.x, nb.y);
+      if (prev.has(k)) continue;
+      if (blocked.has(k)) continue;
+
+      prev.set(k, curKey);
+      dist.set(k, curD + 1);
+      q.push(nb);
     }
-  );
+  }
+
+  if (!prev.has(destKey)) return [];
+
+  // reconstruct (includes start and dest)
+  const pathRev: Tile[] = [];
+  let cur: string | null = destKey;
+  while (cur) {
+    const [xs, ys] = cur.split(",");
+    pathRev.push({ x: Number(xs), y: Number(ys) });
+    cur = prev.get(cur) ?? null;
+  }
+  pathRev.reverse();
+
+  // enforce maxSteps
+  if (pathRev.length - 1 > maxSteps) return [];
+  return pathRev;
 }

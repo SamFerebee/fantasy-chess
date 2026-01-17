@@ -3,14 +3,15 @@ import type { BoardConfig } from "../board/BoardConfig";
 import type { Unit } from "../units/UnitTypes";
 import type { UnitRenderer } from "../units/UnitRenderer";
 import type { MoveRangeOverlay } from "./MoveRangeOverlay";
-import type { TileCoord } from "./path";
 import type { PathPreviewOverlay } from "./PathPreviewOverlay";
-import { animateUnitAlongPath, type MoveAnimationHandle } from "./moveAnimator";
-import { keyXY } from "./movementRules";
-import { getPathForMove } from "./pathing";
-import { ReachabilityCache } from "./ReachabilityCache";
+import type { TileCoord } from "./path";
 
-export type TileHit = { x: number; y: number } | null;
+import { ReachabilityCache } from "./ReachabilityCache";
+import { buildBlockedSet, computeReachableTiles, isInBoundsAndNotCutout, keyXY } from "./movementRules";
+import { getPathForMove } from "./pathing";
+import { animateUnitAlongPath } from "./moveAnimator";
+
+export type MoveResult = { ok: false } | { ok: true; cost: number };
 
 export class MovementController {
   private scene: Phaser.Scene;
@@ -21,12 +22,12 @@ export class MovementController {
   private moveOverlay: MoveRangeOverlay;
   private pathPreview: PathPreviewOverlay;
 
-  private reach: ReachabilityCache;
+  private selectedUnit: Unit | null = null;
+  private hoverTile: TileCoord | null = null;
 
   private animating = false;
-  private moveAnim: MoveAnimationHandle | null = null;
 
-  private msPerStep = 90;
+  private reach = new ReachabilityCache();
 
   constructor(args: {
     scene: Phaser.Scene;
@@ -44,124 +45,126 @@ export class MovementController {
     this.unitRenderer = args.unitRenderer;
     this.moveOverlay = args.moveOverlay;
     this.pathPreview = args.pathPreview;
-
-    this.reach = new ReachabilityCache(this.cfg, this.units);
   }
 
-  isAnimatingMove(): boolean {
+  isAnimatingMove() {
     return this.animating;
   }
 
-  setSelectedUnit(unit: Unit | null) {
-    this.moveOverlay.setSelectedUnit(unit);
-    this.pathPreview.clear();
-    this.reach.setSelected(unit);
+  setMoveRangeEnabled(enabled: boolean, budget?: number) {
+    if (!enabled || !this.selectedUnit) {
+      this.pathPreview.setPath([]);
+      this.moveOverlay.setSelectedUnit(null, []);
+      return;
+    }
+
+    const maxSteps = Math.max(0, budget ?? this.selectedUnit.actionPoints);
+    const blocked = buildBlockedSet(this.units, this.selectedUnit.id);
+    const reachable = computeReachableTiles(this.selectedUnit, maxSteps, this.cfg, blocked);
+
+    this.reach.set(this.selectedUnit.id, maxSteps, reachable.map((t) => keyXY(t.x, t.y)));
+    this.moveOverlay.setSelectedUnit(this.selectedUnit, reachable);
   }
 
-  setHoverTile(tile: TileCoord | null): void {
-    if (this.animating) {
-      this.pathPreview.clear();
+  setSelectedUnit(unit: Unit | null, budget?: number) {
+    this.selectedUnit = unit;
+    this.hoverTile = null;
+    this.pathPreview.setPath([]);
+
+    if (!unit) {
+      this.reach.clear();
+      this.moveOverlay.setSelectedUnit(null, []);
       return;
     }
 
-    const selected = this.unitRenderer.getSelectedUnit();
-    if (!selected || !tile) {
-      this.pathPreview.clear();
+    this.setMoveRangeEnabled(true, budget);
+  }
+
+  setHoverTile(tile: TileCoord | null) {
+    this.hoverTile = tile;
+
+    if (this.animating || !this.selectedUnit || !tile) {
+      this.pathPreview.setPath([]);
       return;
     }
 
-    const reachableKeys = this.reach.ensure(selected);
-
-    // Only show for reachable empty tiles
-    if (!reachableKeys.has(keyXY(tile.x, tile.y))) {
-      this.pathPreview.clear();
+    const maxSteps = this.reach.getBudgetForSelected(this.selectedUnit.id);
+    const reachableKeys = this.reach.getKeysForSelected(this.selectedUnit.id);
+    if (!reachableKeys) {
+      this.pathPreview.setPath([]);
       return;
     }
 
-    const occupied = this.unitRenderer.getUnitAtTile(tile.x, tile.y);
+    const destKey = keyXY(tile.x, tile.y);
+    if (!reachableKeys.has(destKey)) {
+      this.pathPreview.setPath([]);
+      return;
+    }
+
+    const occupied = this.units.some((u) => u.id !== this.selectedUnit!.id && u.x === tile.x && u.y === tile.y);
     if (occupied) {
-      this.pathPreview.clear();
+      this.pathPreview.setPath([]);
       return;
     }
 
-    const path = getPathForMove({
-      cfg: this.cfg,
-      units: this.units,
-      selected,
-      dest: tile,
-      reachableKeys,
-    });
-
-    if (!path || path.length < 2) {
-      this.pathPreview.clear();
-      return;
-    }
+    const blocked = buildBlockedSet(this.units, this.selectedUnit.id);
+    const path = getPathForMove(this.selectedUnit, tile, maxSteps, this.cfg, blocked);
 
     this.pathPreview.setPath(path);
   }
 
-  tryMoveTo(dest: TileHit): boolean {
-    if (this.animating) return true;
-    if (!dest) return false;
+  tryMoveTo(tile: TileCoord | null, budget: number): MoveResult {
+    if (this.animating) return { ok: false };
+    if (!this.selectedUnit) return { ok: false };
+    if (!tile) return { ok: false };
 
-    const selected = this.unitRenderer.getSelectedUnit();
-    if (!selected) return false;
+    const movingUnitId = this.selectedUnit.id;
+    const maxSteps = Math.max(0, budget);
 
-    const occupied = this.unitRenderer.getUnitAtTile(dest.x, dest.y);
-    if (occupied) return false;
+    if (!isInBoundsAndNotCutout(tile.x, tile.y, this.cfg)) return { ok: false };
 
-    const reachableKeys = this.reach.ensure(selected);
+    const occupied = this.units.some((u) => u.id !== movingUnitId && u.x === tile.x && u.y === tile.y);
+    if (occupied) return { ok: false };
 
-    if (!reachableKeys.has(keyXY(dest.x, dest.y))) return false;
+    const blocked = buildBlockedSet(this.units, movingUnitId);
+    const path = getPathForMove(this.selectedUnit, tile, maxSteps, this.cfg, blocked);
+    if (path.length === 0) return { ok: false };
 
-    const path = getPathForMove({
-      cfg: this.cfg,
-      units: this.units,
-      selected,
-      dest: { x: dest.x, y: dest.y },
-      reachableKeys,
-    });
+    const cost = Math.max(0, path.length - 1);
+    if (cost <= 0) return { ok: false };
+    if (cost > maxSteps) return { ok: false };
 
-    if (!path || path.length < 2) return false;
+    this.pathPreview.setPath([]);
 
-    this.pathPreview.clear();
+    const go = this.unitRenderer.getUnitDisplayObject(movingUnitId);
+    if (!go) return { ok: false };
 
-    const obj = this.unitRenderer.getUnitDisplayObject(selected.id) as any;
-    if (!obj || typeof obj.x !== "number" || typeof obj.y !== "number") {
-      this.unitRenderer.moveUnitTo(selected.id, dest.x, dest.y);
-      this.moveOverlay.setSelectedUnit(selected);
-      this.reach.recompute(selected);
-      return true;
-    }
-
-    this.startMoveAnimation(selected, obj, path);
-    return true;
-  }
-
-  private startMoveAnimation(selected: Unit, obj: any, path: TileCoord[]) {
     this.animating = true;
 
-    if (this.moveAnim) {
-      this.moveAnim.stop();
-      this.moveAnim = null;
-    }
+    const destX = tile.x;
+    const destY = tile.y;
 
-    this.moveAnim = animateUnitAlongPath({
-      scene: this.scene,
-      cfg: this.cfg,
-      obj,
-      path,
-      msPerStep: this.msPerStep,
-      onDone: () => {
-        const dest = path[path.length - 1];
-
-        this.unitRenderer.moveUnitTo(selected.id, dest.x, dest.y);
-        this.moveOverlay.setSelectedUnit(selected);
-        this.reach.recompute(selected);
-
-        this.animating = false;
-        this.moveAnim = null;
-      },
+    const tileToWorld = (t: TileCoord) => ({
+      x: (t.x - t.y) * (this.cfg.tileW / 2),
+      y: (t.x + t.y) * (this.cfg.tileH / 2),
     });
+
+    animateUnitAlongPath(this.scene, go, path, tileToWorld, () => {
+      this.animating = false;
+
+      this.unitRenderer.moveUnitTo(movingUnitId, destX, destY);
+
+      const current = this.unitRenderer.getSelectedUnit();
+      if (current && current.id === movingUnitId) {
+        this.setMoveRangeEnabled(true, Math.max(0, maxSteps - cost));
+      } else {
+        this.pathPreview.setPath([]);
+      }
+
+      // Notify TurnController (auto end turn after move, if needed)
+      this.scene.events.emit("move:complete", { unitId: movingUnitId });
+    });
+
+    return { ok: true, cost };
   }
 }
