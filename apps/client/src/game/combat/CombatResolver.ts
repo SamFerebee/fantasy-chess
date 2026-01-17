@@ -1,38 +1,45 @@
 import type { Unit } from "../units/UnitTypes";
 import { isAdjacent4Way } from "../rules/adjacency";
 
-const MELEE_RANGE = 1;
-const RANGED_RANGE = 5; // Manhattan distance
-
 export type AttackResult =
   | { ok: false; reason: "outOfRange" }
-  | { ok: true; killed: true; hit: Unit };
+  | { ok: true; killed: boolean; hit: Unit; damageDealt: number; targetHPAfter: number };
 
 export class CombatResolver {
   /**
-   * Projectile behavior (current ranged type):
-   * - ranged attacks have max range (Manhattan) = 5
-   * - uses line-of-sight: first unit encountered along the line is hit (can be friendly)
+   * Current behavior:
+   * - melee: must be adjacent (4-way)
+   * - ranged: must be within attacker.attackRange (Manhattan)
+   * - ranged LOS: first unit encountered on the line is hit (can be friendly)
+   * - damage: apply flat mitigation via armor
    */
   tryAttack(attacker: Unit, target: Unit, units: Unit[]): AttackResult {
-    // Melee: must be adjacent (4-way).
+    // Melee: must be adjacent (4-way)
     if (attacker.attackType === "melee") {
-      if (MELEE_RANGE !== 1 || !isAdjacent4Way(attacker, target)) return { ok: false, reason: "outOfRange" };
-      return { ok: true, killed: true, hit: target };
+      if (!isAdjacent4Way(attacker, target)) return { ok: false, reason: "outOfRange" };
+      return this.applyDamage(attacker, target);
     }
 
-    // Ranged: within manhattan range
+    // Ranged: within manhattan range (read from unit)
+    const range = Math.max(0, attacker.attackRange);
     const dist = Math.abs(attacker.x - target.x) + Math.abs(attacker.y - target.y);
-    if (dist < 1 || dist > RANGED_RANGE) return { ok: false, reason: "outOfRange" };
+    if (dist < 1 || dist > range) return { ok: false, reason: "outOfRange" };
 
-    // Projectile line-of-sight: first unit on the line is hit.
-    const hit = firstUnitOnLine(attacker, target, units);
-    if (!hit) {
-      // Shouldn't happen (target is a unit), but keep it safe.
-      return { ok: true, killed: true, hit: target };
-    }
+    // Projectile line-of-sight: first unit on the line is hit
+    const hit = firstUnitOnLine(attacker, target, units) ?? target;
+    return this.applyDamage(attacker, hit);
+  }
 
-    return { ok: true, killed: true, hit };
+  private applyDamage(attacker: Unit, target: Unit): AttackResult {
+    const raw = Math.max(0, attacker.damage);
+    const mitigated = Math.max(0, raw - Math.max(0, target.armor));
+
+    const hpAfter = Math.max(0, target.hp - mitigated);
+    const killed = hpAfter <= 0;
+
+    // Note: This resolver returns the computed outcome. Actual mutation/state updates
+    // should be performed by the game state system that calls CombatResolver.
+    return { ok: true, killed, hit: target, damageDealt: mitigated, targetHPAfter: hpAfter };
   }
 }
 
