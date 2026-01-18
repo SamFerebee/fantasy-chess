@@ -1,5 +1,6 @@
 import type { PosUnit, TileCoord } from "../lineOfSight";
 import { computeProjectilePath } from "../lineOfSight";
+import { tryResolveScoutMicroLaneTilePath } from "../microlanes/ScoutMicroLaneResolver";
 
 function keyXY(x: number, y: number) {
   return `${x},${y}`;
@@ -62,11 +63,27 @@ export function canScoutKnightBypass(attacker: PosUnit, aimTile: TileCoord, unit
 
 /**
  * Scout preview path:
- * - Knight shots: show ONLY the landing tile (as a direct shot).
- * - Double-knight blocked: show ONLY the midpoint blocker tile (direct shot to blocker).
- * - Otherwise: show normal straight-line (blocked) path.
+ * - If unblocked: show normal straight-line path.
+ * - If blocked: apply knight rules, then micro-lane seam path, else show blocked LOS path.
+ *
+ * IMPORTANT: This function intentionally calls the SAME micro-lane helper used by CombatResolver
+ * so preview + resolution stay identical.
  */
-export function computeScoutProjectilePath(attacker: PosUnit, aimTile: TileCoord, units: PosUnit[]): TileCoord[] {
+export function computeScoutProjectilePath(
+  attacker: PosUnit,
+  aimTile: TileCoord,
+  units: PosUnit[],
+  maxRange: number
+): TileCoord[] {
+  const losPath = computeProjectilePath(attacker, aimTile, units);
+  if (!losPath || losPath.length < 2) return losPath ?? [];
+
+  const last = losPath[losPath.length - 1];
+  const blockedBeforeAim = last.x !== aimTile.x || last.y !== aimTile.y;
+
+  if (!blockedBeforeAim) return losPath;
+
+  // 1) double-knight midpoint block preview (hit midpoint if occupied)
   const blockerMid = getScoutDoubleKnightBlockerTile(attacker, aimTile, units);
   if (blockerMid) {
     return [
@@ -75,6 +92,7 @@ export function computeScoutProjectilePath(attacker: PosUnit, aimTile: TileCoord
     ];
   }
 
+  // 2) knight bypass preview (ignore blockers)
   if (canScoutKnightBypass(attacker, aimTile, units)) {
     return [
       { x: attacker.x, y: attacker.y },
@@ -82,5 +100,14 @@ export function computeScoutProjectilePath(attacker: PosUnit, aimTile: TileCoord
     ];
   }
 
-  return computeProjectilePath(attacker, aimTile, units);
+  // 3) micro-lane seam threading preview
+  // We call the exact same helper as CombatResolver. It expects Unit[], but only uses id/x/y.
+  // Provide minimal compatible objects to avoid importing Unit types here.
+  const attackerUnitLike = { id: attacker.id, x: attacker.x, y: attacker.y } as any;
+  const unitsLike = units.map((u) => ({ id: u.id, x: u.x, y: u.y })) as any;
+
+  const micro = tryResolveScoutMicroLaneTilePath(attackerUnitLike, aimTile, unitsLike, Math.max(0, maxRange));
+  if (micro) return micro;
+
+  return losPath;
 }
