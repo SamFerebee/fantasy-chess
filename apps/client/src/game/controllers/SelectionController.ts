@@ -21,9 +21,25 @@ export class SelectionController {
   private movement: MovementController;
   private turns: TurnController;
   private actionBar: ActionBar;
+  private model: GameModel;
 
   private overlayMode: ReturnType<typeof createOverlayModeManager>;
   private clickHandler: ReturnType<typeof createSelectionClickHandler>;
+
+  // Enemy HUD state:
+  // - pinnedEnemyId: set by click when NO FRIENDLY unit is selected (keeps info up)
+  // - hoverEnemyId: transient; overrides pinned while hovering an enemy tile/unit
+  //
+  // Rules:
+  // - Click enemy (no friendly selected) => pin enemy, persists when moving mouse away
+  // - Hover enemy always shows hovered enemy (even if friendly selected)
+  // - If you hover a DIFFERENT enemy than the pinned one, clear pin so hover-out => nothing
+  //   (but hovering the same pinned enemy must NOT clear pin, or click won't persist)
+  private pinnedEnemyId: string | null = null;
+  private hoverEnemyId: string | null = null;
+  private lastEmittedEnemyId: string | null = null;
+
+  private onEnemyInfoUnitChanged: (unitId: string | null) => void;
 
   constructor(args: {
     scene: Phaser.Scene;
@@ -38,6 +54,7 @@ export class SelectionController {
     actionBar: ActionBar;
     attackOverlay: AttackRangeOverlay;
     projectilePathOverlay: ProjectilePathOverlay;
+    onEnemyInfoUnitChanged?: (unitId: string | null) => void;
   }) {
     this.scene = args.scene;
     this.picker = args.picker;
@@ -46,6 +63,9 @@ export class SelectionController {
     this.movement = args.movement;
     this.turns = args.turns;
     this.actionBar = args.actionBar;
+    this.model = args.model;
+
+    this.onEnemyInfoUnitChanged = args.onEnemyInfoUnitChanged ?? (() => {});
 
     const getUnits = () => args.model.getUnits();
 
@@ -72,22 +92,78 @@ export class SelectionController {
     });
   }
 
+  private getActiveTeam() {
+    return this.turns.getActiveTeam();
+  }
+
+  private isFriendlySelected(): boolean {
+    const sel = this.unitRenderer.getSelectedUnit();
+    if (!sel) return false;
+    return sel.team === this.getActiveTeam();
+  }
+
+  private getEnemyIdAtTile(hit: { x: number; y: number } | null): string | null {
+    if (!hit) return null;
+    const active = this.getActiveTeam();
+    const u = this.model.getUnitAtTile(hit.x, hit.y);
+    if (!u) return null;
+    return u.team !== active ? u.id : null;
+  }
+
+  private emitEnemyHudIfChanged(force?: boolean) {
+    // If a friendly is selected, click-pin should not apply.
+    if (this.isFriendlySelected()) {
+      this.pinnedEnemyId = null;
+
+      const effective = this.hoverEnemyId; // hover-only while friendly selected
+      if (force || effective !== this.lastEmittedEnemyId) {
+        this.lastEmittedEnemyId = effective;
+        this.onEnemyInfoUnitChanged(effective);
+      }
+      return;
+    }
+
+    // No friendly selected:
+    // - hover overrides pin
+    // - if not hovering an enemy, show pinned (if any)
+    const effective = this.hoverEnemyId ?? this.pinnedEnemyId;
+    if (force || effective !== this.lastEmittedEnemyId) {
+      this.lastEmittedEnemyId = effective;
+      this.onEnemyInfoUnitChanged(effective);
+    }
+  }
+
   attach() {
-    // Mode changes update overlays (move range vs attack range).
     this.actionBar.onModeChanged((mode) => this.overlayMode.applyMode(mode));
 
-    // Hover updates the tile outline + (in attack mode) projectile path preview.
     this.picker.onHover((hit) => {
       this.overlay.setHovered(hit);
       this.overlayMode.handleHover(hit);
+
+      const hoveredEnemyId = this.getEnemyIdAtTile(hit);
+      this.hoverEnemyId = hoveredEnemyId;
+
+      // Only clear the pin if the hover is on a DIFFERENT enemy than the pinned one.
+      // This preserves click-to-pin when you're still hovering the clicked enemy,
+      // but satisfies: hover a different enemy -> hover-out => nothing.
+      if (hoveredEnemyId && this.pinnedEnemyId && hoveredEnemyId !== this.pinnedEnemyId) {
+        this.pinnedEnemyId = null;
+      }
+
+      this.emitEnemyHudIfChanged();
     });
 
-    // Click selection / actions.
     this.picker.onSelect((hit) => {
+      // Click-pin only when NO FRIENDLY unit is selected.
+      if (!this.isFriendlySelected()) {
+        this.pinnedEnemyId = this.getEnemyIdAtTile(hit);
+        this.emitEnemyHudIfChanged(true); // immediate update; do not wait for hover
+      }
+
       this.clickHandler.onTileSelected(hit);
     });
 
-    // Initialize for default action mode.
     this.overlayMode.applyMode(this.actionBar.getMode());
+    this.emitEnemyHudIfChanged(true);
   }
 }
