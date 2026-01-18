@@ -1,7 +1,12 @@
-import type { Unit } from "../units/UnitTypes";
 import { bresenhamLine } from "../util/gridLine";
 
 export type TileCoord = { x: number; y: number };
+
+/**
+ * Minimal unit shape for projectile LOS/path preview.
+ * Intentionally decoupled from sim Unit objects.
+ */
+export type PosUnit = { id: string; x: number; y: number };
 
 function keyXY(x: number, y: number) {
   return `${x},${y}`;
@@ -11,8 +16,8 @@ function keyXY(x: number, y: number) {
  * Default projectile path: straight Bresenham line, but stops at the first unit encountered.
  * (Includes attacker tile at index 0.)
  */
-export function computeProjectilePath(attacker: Unit, aimTile: TileCoord, units: Unit[]): TileCoord[] {
-  const byPos = new Map<string, Unit>();
+export function computeProjectilePath(attacker: PosUnit, aimTile: TileCoord, units: PosUnit[]): TileCoord[] {
+  const byPos = new Map<string, PosUnit>();
   for (const u of units) byPos.set(keyXY(u.x, u.y), u);
 
   const line = bresenhamLine(attacker.x, attacker.y, aimTile.x, aimTile.y);

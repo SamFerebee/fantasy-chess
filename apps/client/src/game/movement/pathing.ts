@@ -1,10 +1,11 @@
 import type { BoardConfig } from "../board/BoardConfig";
-import type { Unit } from "../units/UnitTypes";
 import type { TileCoord } from "./path";
 import { isInBoundsAndNotCutout, keyXY } from "./movementRules";
 
+export type PosOnly = { x: number; y: number };
+
 export function getPathForMove(
-  start: Unit,
+  start: PosOnly,
   dest: TileCoord,
   maxSteps: number,
   cfg: BoardConfig,

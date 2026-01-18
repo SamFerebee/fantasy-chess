@@ -1,11 +1,16 @@
 import type { BoardConfig } from "../board/BoardConfig";
 import type { TileCoord } from "../movement/path";
-import { buildBlockedSet, isInBoundsAndNotCutout } from "../movement/movementRules";
+import { buildBlockedSet, computeReachableTiles, isInBoundsAndNotCutout } from "../movement/movementRules";
 import { getPathForMove } from "../movement/pathing";
 import type { Unit, Team } from "../units/UnitTypes";
 import { CombatResolver } from "../combat/CombatResolver";
+import { computeAttackTiles } from "../combat/attackRange";
+import type { PosUnit } from "../combat/lineOfSight";
+import { computeProjectilePath } from "../combat/lineOfSight";
+import { computeScoutProjectilePath } from "../combat/scout/ScoutShot";
 import { TurnState } from "../turns/TurnState";
 import { compareUnitId } from "../util/idSort";
+import { isAdjacent4Way } from "../rules/adjacency";
 import type { GameAction, ApplyResult } from "./GameActions";
 import type { GameEvent } from "./GameEvents";
 import type { GameSnapshot } from "./GameSnapshot";
@@ -13,12 +18,6 @@ import type { GameSnapshot } from "./GameSnapshot";
 export type RNG = { nextFloat: () => number };
 
 export class GameModel {
-  /**
-   * Authoritative storage:
-   * - unitById is the source of truth
-   * - unitOrder is the stable ordering (by unitId)
-   * - unitsView is a derived array view (stable reference) for legacy render/UI code
-   */
   private unitById = new Map<string, Unit>();
   private unitOrder: string[] = [];
   private unitsView: Unit[] = []; // stable reference
@@ -41,10 +40,18 @@ export class GameModel {
   // ---- Read-only helpers ----
 
   /**
-   * Returns a stable array view of units (ordered by authoritative unitId).
+   * Stable unit id ordering (authoritative ids, not array indices).
    * Treat as read-only.
    */
-  getUnits(): Unit[] {
+  getUnitIds(): ReadonlyArray<string> {
+    return this.unitOrder;
+  }
+
+  /**
+   * @deprecated Avoid using this from view/controller code. Prefer ids + getUnitById().
+   * Stable array view ordered by unitId. Treat as read-only.
+   */
+  getUnits(): ReadonlyArray<Unit> {
     return this.unitsView;
   }
 
@@ -97,7 +104,6 @@ export class GameModel {
       throw new Error(`Unsupported GameSnapshot version: ${String((snap as any).version)}`);
     }
 
-    // Clone to prevent accidental mutation coupling with network buffers.
     const nextUnits = snap.units.map(cloneUnit);
     this.loadUnits(nextUnits);
 
@@ -110,6 +116,46 @@ export class GameModel {
    */
   previewMovePath(unitId: string, dest: TileCoord, maxSteps: number, cfg: BoardConfig): TileCoord[] {
     return this.computeMovePath(unitId, dest, maxSteps, cfg);
+  }
+
+  /**
+   * Derived data: all reachable tiles within `maxSteps` for the given unit.
+   * Safe for UI previews and server validation (pure function over current state).
+   */
+  getReachableTiles(unitId: string, maxSteps: number, cfg: BoardConfig): TileCoord[] {
+    const u = this.getUnitById(unitId);
+    if (!u) return [];
+    if (maxSteps <= 0) return [];
+
+    const blocked = buildBlockedSet(this.unitsView, unitId);
+    return computeReachableTiles({ x: u.x, y: u.y }, maxSteps, cfg, blocked);
+  }
+
+  /**
+   * Derived data: all tiles that this unit can target (range overlay).
+   */
+  getAttackableTiles(unitId: string, cfg: BoardConfig): TileCoord[] {
+    const u = this.getUnitById(unitId);
+    if (!u) return [];
+    return computeAttackTiles(u, cfg);
+  }
+
+  /**
+   * Derived data: projectile/LOS preview path for a ranged attacker.
+   * Returns empty if attacker doesn't exist.
+   */
+  getProjectilePreviewPath(attackerId: string, aimTile: TileCoord): TileCoord[] {
+    const u = this.getUnitById(attackerId);
+    if (!u) return [];
+
+    const units: PosUnit[] = this.unitsView.map((x) => ({ id: x.id, x: x.x, y: x.y }));
+    const attacker: PosUnit = { id: u.id, x: u.x, y: u.y };
+
+    if (u.name === "scout") {
+      return computeScoutProjectilePath(attacker, aimTile, units);
+    }
+
+    return computeProjectilePath(attacker, aimTile, units);
   }
 
   // ---- Deterministic action entrypoint ----
@@ -125,6 +171,10 @@ export class GameModel {
 
       case "attackTile":
         return this.applyAttackTile(action.attackerId, action.target);
+
+      case "meleeChaseAttack":
+        if (!cfg) return { ok: false, reason: "illegalMove" };
+        return this.applyMeleeChaseAttack(action.attackerId, action.targetId, cfg);
 
       default:
         return { ok: false, reason: "illegalMove" };
@@ -146,7 +196,6 @@ export class GameModel {
     if (!isInBoundsAndNotCutout(dest.x, dest.y, cfg)) return [];
     if (dest.x === u.x && dest.y === u.y) return [];
 
-    // Cannot end on another unit.
     const occ = this.unitIdByTileKey.get(tileKey(dest.x, dest.y));
     if (occ && occ !== unitId) return [];
 
@@ -167,7 +216,6 @@ export class GameModel {
 
     const cost = path.length - 1;
 
-    // Update occupancy index before/after mutation.
     this.unitIdByTileKey.delete(tileKey(u.x, u.y));
     u.x = to.x;
     u.y = to.y;
@@ -188,14 +236,97 @@ export class GameModel {
     return { ok: true, events, movePath: path, moveCost: cost };
   }
 
+  private applyMeleeChaseAttack(attackerId: string, targetId: string, cfg: BoardConfig): ApplyResult {
+    const attacker = this.getUnitById(attackerId);
+    const target = this.getUnitById(targetId);
+    if (!attacker) return { ok: false, reason: "invalidUnit" };
+    if (!target) return { ok: false, reason: "illegalTarget" };
+
+    if (!this.turn.canControlUnit(attacker)) return { ok: false, reason: "notYourTurn" };
+    if (attacker.team === target.team) return { ok: false, reason: "illegalTarget" };
+    if (attacker.attack.kind !== "melee_adjacent") return { ok: false, reason: "illegalMove" };
+
+    // If already adjacent, just attack now (no staging needed).
+    if (isAdjacent4Way(attacker, target)) {
+      return this.applyAttackTile(attacker.id, { x: target.x, y: target.y });
+    }
+
+    const remainingAp = this.turn.getRemainingAp(attacker);
+    if (remainingAp <= 0) return { ok: false, reason: "noAp" };
+
+    const attackCost = Math.max(0, attacker.attack.apCost);
+    const moveBudget = remainingAp - attackCost;
+    if (moveBudget <= 0) return { ok: false, reason: "noAp" };
+
+    // Deterministic candidate order (stable across client/server).
+    const candidates: TileCoord[] = [
+      { x: target.x + 1, y: target.y },
+      { x: target.x - 1, y: target.y },
+      { x: target.x, y: target.y + 1 },
+      { x: target.x, y: target.y - 1 },
+    ];
+
+    let best: { dest: TileCoord; path: TileCoord[]; cost: number } | null = null;
+
+    for (const dest of candidates) {
+      const path = this.computeMovePath(attacker.id, dest, moveBudget, cfg);
+      if (!path || path.length < 2) continue;
+
+      const cost = path.length - 1;
+      if (cost <= 0 || cost > moveBudget) continue;
+
+      if (!best || cost < best.cost) best = { dest, path, cost };
+    }
+
+    if (!best) return { ok: false, reason: "illegalMove" };
+
+    // Apply the move portion now, but only emit move events immediately.
+    this.unitIdByTileKey.delete(tileKey(attacker.x, attacker.y));
+    attacker.x = best.dest.x;
+    attacker.y = best.dest.y;
+    this.unitIdByTileKey.set(tileKey(attacker.x, attacker.y), attacker.id);
+
+    this.turn.spendForMove(attacker, best.cost);
+
+    const moveEvents: GameEvent[] = [
+      { type: "unitMoved", unitId: attacker.id, x: attacker.x, y: attacker.y },
+      { type: "apChanged", unitId: attacker.id, remainingAp: this.turn.getRemainingAp(attacker) },
+    ];
+
+    // After moving, we must now be adjacent.
+    if (!isAdjacent4Way(attacker, target)) {
+      // This should not happen if pathing/occupancy are correct, but keep it strict.
+      return { ok: false, reason: "illegalMove" };
+    }
+
+    // Apply the attack portion now, but stage its events for after the move animation.
+    const atkRes = this.applyAttackTile(attacker.id, { x: target.x, y: target.y });
+    if (!atkRes.ok) return atkRes;
+
+    return {
+      ok: true,
+      events: moveEvents,
+      movePath: best.path,
+      moveCost: best.cost,
+      postMoveEvents: atkRes.events,
+    };
+  }
+
   private applyAttackTile(attackerId: string, target: TileCoord): ApplyResult {
     const attacker = this.getUnitById(attackerId);
     if (!attacker) return { ok: false, reason: "invalidUnit" };
     if (!this.turn.canControlUnit(attacker)) return { ok: false, reason: "notYourTurn" };
     if (!this.turn.canAttack(attacker)) return { ok: false, reason: "noAp" };
 
+    // Some tile-targeted attacks may forbid aiming at empty tiles.
+    const canTargetEmpty = (attacker.attack as any).canTargetEmptyTiles === true;
+    if (!canTargetEmpty) {
+      const aimed = this.getUnitAtTile(target.x, target.y);
+      if (!aimed) return { ok: false, reason: "illegalTarget" };
+    }
+
     const result = this.combat.tryAttackAtTile(attacker, target, this.unitsView);
-    if (!result.ok) return { ok: false, reason: "outOfRange" };
+    if (!result.ok) return { ok: false, reason: result.reason };
 
     if (!result.hit) {
       this.turn.spendForAttack(attacker);
@@ -214,7 +345,6 @@ export class GameModel {
 
     const hitUnit = this.getUnitById(result.hit.id);
     if (!hitUnit) {
-      // Defensive; should not happen.
       this.turn.spendForAttack(attacker);
 
       const events: GameEvent[] = [
