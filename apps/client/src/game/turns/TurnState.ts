@@ -1,4 +1,5 @@
 import type { Unit, Team } from "../units/UnitTypes";
+import { compareUnitId } from "../util/idSort";
 
 export type TurnStateSnapshot = {
   /** Monotonic, increments each time `endTurn()` is called. Starts at 1. */
@@ -20,11 +21,16 @@ export class TurnState {
   private remainingAp = new Map<string, number>();
 
   snapshot(): TurnStateSnapshot {
+    // Stable ordering reduces diff noise and makes snapshot/restore deterministic.
+    const remainingAp = [...this.remainingAp.entries()]
+      .map(([unitId, ap]) => ({ unitId, ap }))
+      .sort((a, b) => compareUnitId(a.unitId, b.unitId));
+
     return {
       turnNumber: this.turnNumber,
       activeTeam: this.activeTeam,
       activatedUnitId: this.activatedUnitId,
-      remainingAp: [...this.remainingAp.entries()].map(([unitId, ap]) => ({ unitId, ap })),
+      remainingAp,
     };
   }
 
