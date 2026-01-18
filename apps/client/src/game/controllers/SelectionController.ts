@@ -30,11 +30,10 @@ export class SelectionController {
   // - pinnedEnemyId: set by click when NO FRIENDLY unit is selected (keeps info up)
   // - hoverEnemyId: transient; overrides pinned while hovering an enemy tile/unit
   //
-  // Rules:
-  // - Click enemy (no friendly selected) => pin enemy, persists when moving mouse away
-  // - Hover enemy always shows hovered enemy (even if friendly selected)
-  // - If you hover a DIFFERENT enemy than the pinned one, clear pin so hover-out => nothing
-  //   (but hovering the same pinned enemy must NOT clear pin, or click won't persist)
+  // Spec behavior:
+  // - Hover enemy => show hovered
+  // - Click enemy with no friendly selected => show/pin clicked enemy (mobile equivalent)
+  // - If you later hover a DIFFERENT enemy, HUD shows hovered; when hover ends => clears (no revert)
   private pinnedEnemyId: string | null = null;
   private hoverEnemyId: string | null = null;
   private lastEmittedEnemyId: string | null = null;
@@ -72,6 +71,7 @@ export class SelectionController {
     this.overlayMode = createOverlayModeManager({
       cfg: args.cfg,
       getUnits,
+      model: args.model,
       unitRenderer: this.unitRenderer,
       turns: this.turns,
       movement: this.movement,
@@ -97,25 +97,31 @@ export class SelectionController {
   }
 
   private isFriendlySelected(): boolean {
-    const sel = this.unitRenderer.getSelectedUnit();
+    const selId = this.unitRenderer.getSelectedUnitId();
+    if (!selId) return false;
+
+    const sel = this.model.getUnitById(selId);
     if (!sel) return false;
+
     return sel.team === this.getActiveTeam();
   }
 
   private getEnemyIdAtTile(hit: { x: number; y: number } | null): string | null {
     if (!hit) return null;
+
     const active = this.getActiveTeam();
     const u = this.model.getUnitAtTile(hit.x, hit.y);
     if (!u) return null;
+
     return u.team !== active ? u.id : null;
   }
 
   private emitEnemyHudIfChanged(force?: boolean) {
-    // If a friendly is selected, click-pin should not apply.
+    // If a friendly is selected, clicks should not pin.
     if (this.isFriendlySelected()) {
       this.pinnedEnemyId = null;
 
-      const effective = this.hoverEnemyId; // hover-only while friendly selected
+      const effective = this.hoverEnemyId;
       if (force || effective !== this.lastEmittedEnemyId) {
         this.lastEmittedEnemyId = effective;
         this.onEnemyInfoUnitChanged(effective);
@@ -134,8 +140,10 @@ export class SelectionController {
   }
 
   attach() {
+    // Mode changes update overlays (move range vs attack range).
     this.actionBar.onModeChanged((mode) => this.overlayMode.applyMode(mode));
 
+    // Hover updates the tile outline + (in attack mode) projectile path preview + enemy HUD.
     this.picker.onHover((hit) => {
       this.overlay.setHovered(hit);
       this.overlayMode.handleHover(hit);
@@ -143,9 +151,9 @@ export class SelectionController {
       const hoveredEnemyId = this.getEnemyIdAtTile(hit);
       this.hoverEnemyId = hoveredEnemyId;
 
-      // Only clear the pin if the hover is on a DIFFERENT enemy than the pinned one.
-      // This preserves click-to-pin when you're still hovering the clicked enemy,
-      // but satisfies: hover a different enemy -> hover-out => nothing.
+      // If you hover a DIFFERENT enemy than the pinned one, clear the pin so that
+      // hover-out results in "nothing" (no revert).
+      // Do NOT clear if you are hovering the pinned enemy itself, or click wouldn't persist.
       if (hoveredEnemyId && this.pinnedEnemyId && hoveredEnemyId !== this.pinnedEnemyId) {
         this.pinnedEnemyId = null;
       }
@@ -153,16 +161,18 @@ export class SelectionController {
       this.emitEnemyHudIfChanged();
     });
 
+    // Click selection / actions + enemy HUD pinning behavior.
     this.picker.onSelect((hit) => {
       // Click-pin only when NO FRIENDLY unit is selected.
       if (!this.isFriendlySelected()) {
         this.pinnedEnemyId = this.getEnemyIdAtTile(hit);
-        this.emitEnemyHudIfChanged(true); // immediate update; do not wait for hover
+        this.emitEnemyHudIfChanged(true); // immediate update (don't wait for hover)
       }
 
       this.clickHandler.onTileSelected(hit);
     });
 
+    // Initialize for default action mode.
     this.overlayMode.applyMode(this.actionBar.getMode());
     this.emitEnemyHudIfChanged(true);
   }

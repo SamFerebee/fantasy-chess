@@ -119,11 +119,17 @@ export class MovementController {
     if (!unit) return false;
 
     if (!isInBoundsAndNotCutout(dest.x, dest.y, this.cfg)) return false;
-    if (this.unitRenderer.getUnitAtTile(dest.x, dest.y)) return false;
+    if (this.model.getUnitAtTile(dest.x, dest.y)) return false;
+
+    // Prevent store-driven snap while we animate the move.
+    this.unitRenderer.setUnitExternallyAnimating(unit.id, true);
 
     // Authoritative move apply lives in the model (server-friendly).
     const res = this.actions.submitLocal({ type: "move", unitId: unit.id, to: dest });
-    if (!res.ok) return false;
+    if (!res.ok) {
+      this.unitRenderer.setUnitExternallyAnimating(unit.id, false);
+      return false;
+    }
 
     const path = res.movePath ?? [];
     if (path.length < 2) return false;
@@ -138,6 +144,7 @@ export class MovementController {
 
       // Snap to exact isometric position.
       this.unitRenderer.setUnitVisualTile(unit.id, dest.x, dest.y);
+      this.unitRenderer.setUnitExternallyAnimating(unit.id, false);
 
       // After move, refresh move range overlay based on remaining AP.
       const uNow = this.model.getUnitById(unit.id);
