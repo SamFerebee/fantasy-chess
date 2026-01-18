@@ -2,15 +2,12 @@ import type { BoardConfig } from "../../board/BoardConfig";
 import type { TileOverlay } from "../../board/TileOverlay";
 import type { TileHit } from "../../input/TilePicker";
 import type { MovementController } from "../../movement/MovementController";
-import type { TileCoord } from "../../movement/path";
 import type { Unit, Team } from "../../units/UnitTypes";
 import type { UnitRenderer } from "../../units/UnitRenderer";
 import type { ActionBar } from "../../ui/ActionBar";
 import type { TurnController } from "../TurnController";
 import type { GameModel } from "../../sim/GameModel";
 import type { createOverlayModeManager } from "./OverlayModeManager";
-
-type PendingMelee = { attackerId: string; targetId: string };
 
 function manhattan(a: { x: number; y: number }, b: { x: number; y: number }) {
   return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
@@ -34,21 +31,35 @@ export function createSelectionClickHandler(args: {
   actionBar: ActionBar;
   overlayMode: ReturnType<typeof createOverlayModeManager>;
 }) {
-  let pendingMelee: PendingMelee | null = null;
-
-  // If we queued a "melee chase" move, finish the attack after the move completes.
+  // After any animated move completes (including staged meleeChaseAttack), refresh selection/overlays.
   args.movement.on("move:complete", (p) => {
-    if (!pendingMelee) return;
-    if (p.unitId !== pendingMelee.attackerId) return;
+    const selectedId = args.unitRenderer.getSelectedUnitId();
+    if (!selectedId) return;
+    if (p.unitId !== selectedId) return;
 
-    const attacker = args.model.getUnitById(pendingMelee.attackerId);
-    const target = args.model.getUnitById(pendingMelee.targetId);
-    pendingMelee = null;
+    const uNow = args.model.getUnitById(selectedId);
+    if (!uNow) {
+      args.unitRenderer.setSelectedUnitId(null);
+      args.overlay.setSelected(null);
+      args.movement.setSelectedUnitId(null);
+      args.movement.setHoverTile(null);
+      args.overlayMode.applyMode(args.actionBar.getMode());
+      return;
+    }
 
-    if (!attacker || !target) return;
-    if (!isAdjacent4Way(attacker, target)) return;
+    const stillControllable = args.turns.canControlUnit(uNow);
+    const remaining = args.turns.getRemainingActionPoints(uNow);
+    if (!stillControllable || remaining <= 0) {
+      args.unitRenderer.setSelectedUnitId(null);
+      args.overlay.setSelected(null);
+      args.movement.setSelectedUnitId(null);
+      args.movement.setHoverTile(null);
+      args.overlayMode.applyMode(args.actionBar.getMode());
+      return;
+    }
 
-    args.turns.tryAttackUnit(attacker, target);
+    args.movement.setSelectedUnitId(uNow.id, remaining);
+    args.overlay.setSelected({ x: uNow.x, y: uNow.y });
     args.overlayMode.applyMode(args.actionBar.getMode());
   });
 
@@ -74,45 +85,20 @@ export function createSelectionClickHandler(args: {
     args.overlayMode.applyMode(args.actionBar.getMode());
   };
 
-  const tryMeleeChaseMove = (attacker: Unit, target: Unit): boolean => {
-    const remainingAp = args.turns.getRemainingActionPoints(attacker);
-    const reserveForAttack = Math.max(0, attacker.attack.apCost);
-    const moveBudget = remainingAp - reserveForAttack;
-    if (moveBudget <= 0) return false;
+  const tryMeleeChaseAttack = (attacker: Unit, target: Unit): boolean => {
+    const res = args.turns.tryMeleeChaseAttack(attacker, target);
+    if (!res.ok) return false;
 
-    const candidates: TileCoord[] = [
-      { x: target.x + 1, y: target.y },
-      { x: target.x - 1, y: target.y },
-      { x: target.x, y: target.y + 1 },
-      { x: target.x, y: target.y - 1 },
-    ];
+    const path = res.movePath ?? [];
+    const post = res.postMoveEvents ?? [];
 
-    // Remove occupied candidates.
-    const occupied = new Set(args.model.getUnits().map((u) => `${u.x},${u.y}`));
-    const open = candidates.filter((t) => !occupied.has(`${t.x},${t.y}`));
-
-    let best: { dest: TileCoord; cost: number } | null = null;
-
-    for (const dest of open) {
-      // FIX: GameModel.previewMovePath now requires cfg (server-auth scaffolding step).
-      const path = args.model.previewMovePath(attacker.id, dest, moveBudget, args.cfg);
-      if (!path || path.length < 2) continue;
-
-      const cost = path.length - 1;
-      if (cost <= 0 || cost > moveBudget) continue;
-
-      if (!best || cost < best.cost) best = { dest, cost };
+    if (path.length >= 2 || post.length > 0) {
+      args.movement.animateAppliedMove(attacker.id, path, post);
+      return true;
     }
 
-    if (!best) return false;
-
-    pendingMelee = { attackerId: attacker.id, targetId: target.id };
-    const moved = args.movement.tryMoveTo(best.dest);
-    if (!moved) {
-      pendingMelee = null;
-      return false;
-    }
-
+    // Resolved immediately as a normal attack (already adjacent).
+    args.overlayMode.applyMode(args.actionBar.getMode());
     return true;
   };
 
@@ -130,7 +116,7 @@ export function createSelectionClickHandler(args: {
 
       if (selected && isEnemy(selected.team, clickedUnit.team)) {
         if (selected.attackType === "melee" && !isAdjacent4Way(selected, clickedUnit)) {
-          void tryMeleeChaseMove(selected, clickedUnit);
+          void tryMeleeChaseAttack(selected, clickedUnit);
           return;
         }
 
@@ -178,7 +164,7 @@ export function createSelectionClickHandler(args: {
       if (!isEnemy(selected.team, clickedUnit.team)) return;
 
       if (!isAdjacent4Way(selected, clickedUnit)) {
-        void tryMeleeChaseMove(selected, clickedUnit);
+        void tryMeleeChaseAttack(selected, clickedUnit);
         return;
       }
 
