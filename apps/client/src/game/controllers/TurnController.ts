@@ -3,10 +3,12 @@ import type { TileOverlay } from "../board/TileOverlay";
 import type { UnitRenderer } from "../units/UnitRenderer";
 import type { MovementController } from "../movement/MovementController";
 import type { Unit, Team } from "../units/UnitTypes";
+import type { TileCoord } from "../movement/path";
 import { TurnHud } from "../ui/TurnHud";
 import type { GameModel } from "../sim/GameModel";
 import type { ApplyResult } from "../sim/GameActions";
 import { CombatFeedback } from "../ui/CombatFeedback";
+import type { ActionQueue } from "../sim/ActionQueue";
 
 export class TurnController {
   private scene: Phaser.Scene;
@@ -15,11 +17,8 @@ export class TurnController {
   private overlay: TileOverlay;
   private movement: MovementController;
 
-  /**
-   * Simulation/model container (no Phaser dependencies).
-   * Owns: AP rules, turn switching, attacks, and unit removal.
-   */
   private model: GameModel;
+  private actions: ActionQueue;
 
   private hud: TurnHud;
   private feedback: CombatFeedback;
@@ -31,6 +30,7 @@ export class TurnController {
     overlay: TileOverlay;
     movement: MovementController;
     model: GameModel;
+    actions: ActionQueue;
   }) {
     this.scene = args.scene;
     this.cam = args.cam;
@@ -38,11 +38,12 @@ export class TurnController {
     this.overlay = args.overlay;
     this.movement = args.movement;
     this.model = args.model;
+    this.actions = args.actions;
 
     this.hud = new TurnHud({ scene: this.scene, cam: this.cam });
     this.feedback = new CombatFeedback({ scene: this.scene, unitRenderer: this.unitRenderer });
 
-    // Removed: pressing E no longer ends the turn.
+    // Key directive: pressing E should NOT end turn (especially for mobile), so no keyboard binding here.
     this.scene.events.on("postupdate", () => this.hud.updatePosition());
 
     this.refreshHud();
@@ -73,21 +74,18 @@ export class TurnController {
   }
 
   /**
-   * Applies an attack (model authoritative), then applies UI side-effects:
+   * Tile-targeted attack (server-authoritative-friendly).
+   * Applies attack via ActionQueue, then performs UI side-effects:
    * - hit feedback (flash + floating damage number)
    * - death feedback (fade/shrink) then destroy unit visuals
    * - clear selection/overlays if the action ended the turn
    */
-  tryAttackUnit(attacker: Unit, target: Unit): ApplyResult {
+  tryAttackTile(attacker: Unit, target: TileCoord): ApplyResult {
     if (!this.canActWithUnit(attacker)) return { ok: false, reason: "notYourTurn" };
 
-    const res = this.model.applyAction({ type: "attackUnit", attackerId: attacker.id, targetId: target.id });
+    const res = this.actions.submitLocal({ type: "attackTile", attackerId: attacker.id, target });
     if (!res.ok) return res;
 
-    // Feedback loop:
-    // - If the attack dealt damage: show that number on the hit unit
-    // - If the attack dealt 0 damage (e.g., armor): show 0 on the hit unit
-    // - If the hit unit died: play death anim, then destroy visuals
     const damagedTargets = new Set<string>();
 
     for (const ev of res.events) {
@@ -119,10 +117,15 @@ export class TurnController {
     return res;
   }
 
+  /** Convenience wrapper for older call sites that still think in "unit target". */
+  tryAttackUnit(attacker: Unit, target: Unit): ApplyResult {
+    return this.tryAttackTile(attacker, { x: target.x, y: target.y });
+  }
+
   endTurn() {
     if (this.movement.isAnimatingMove()) return;
 
-    this.model.applyAction({ type: "endTurn" });
+    this.actions.submitLocal({ type: "endTurn" });
     this.clearSelectionAndOverlays();
   }
 

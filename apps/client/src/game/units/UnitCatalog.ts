@@ -16,14 +16,12 @@ export type UnitDef = {
 
   /**
    * Primary, future-proof attack definition.
-   * Existing legacy fields on Unit (`attackType`, `attackRange`) are derived from this.
    */
   attack: AttackProfile;
 };
 
 /**
  * Single source of truth for base unit attributes.
- * Add new unit types here (knight, dragon, etc).
  */
 export const UNIT_CATALOG: Record<UnitName, UnitDef> = {
   fighter: {
@@ -42,6 +40,7 @@ export const UNIT_CATALOG: Record<UnitName, UnitDef> = {
     },
   },
 
+  // Scout: target any tile within range 6.
   scout: {
     name: "scout",
     shape: "rect",
@@ -94,8 +93,6 @@ function deriveLegacyAttackRange(attack: AttackProfile): number {
       return Math.max(0, attack.maxRange);
 
     case "quake_aoe":
-      // Not a "range to target"; keep 0 so existing "within range" checks do not misbehave.
-      // The AOE overlay/rules should key off `attack.radius`.
       return 0;
   }
 }

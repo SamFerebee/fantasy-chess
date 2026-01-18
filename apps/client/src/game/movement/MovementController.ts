@@ -9,6 +9,7 @@ import { animateUnitAlongPath } from "./moveAnimator";
 import { buildBlockedSet, computeReachableTiles, isInBoundsAndNotCutout } from "./movementRules";
 import { getPathForMove } from "./pathing";
 import type { GameModel } from "../sim/GameModel";
+import type { ActionQueue } from "../sim/ActionQueue";
 
 type MoveCompletePayload = { unitId: string };
 
@@ -18,6 +19,7 @@ export class MovementController {
   private cfg: BoardConfig;
 
   private model: GameModel;
+  private actions: ActionQueue;
   private unitRenderer: UnitRenderer;
 
   private moveOverlay: MoveRangeOverlay;
@@ -38,6 +40,7 @@ export class MovementController {
     cam: Phaser.Cameras.Scene2D.Camera;
     cfg: BoardConfig;
     model: GameModel;
+    actions: ActionQueue;
     unitRenderer: UnitRenderer;
     moveOverlay: MoveRangeOverlay;
     pathPreview: PathPreviewOverlay;
@@ -47,6 +50,7 @@ export class MovementController {
     this.cfg = args.cfg;
 
     this.model = args.model;
+    this.actions = args.actions;
     this.unitRenderer = args.unitRenderer;
 
     this.moveOverlay = args.moveOverlay;
@@ -118,7 +122,7 @@ export class MovementController {
     if (this.unitRenderer.getUnitAtTile(dest.x, dest.y)) return false;
 
     // Authoritative move apply lives in the model (server-friendly).
-    const res = this.model.applyAction({ type: "move", unitId: unit.id, to: dest }, this.cfg);
+    const res = this.actions.submitLocal({ type: "move", unitId: unit.id, to: dest });
     if (!res.ok) return false;
 
     const path = res.movePath ?? [];

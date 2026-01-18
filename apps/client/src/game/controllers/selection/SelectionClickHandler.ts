@@ -65,7 +65,7 @@ export function createSelectionClickHandler(args: {
   };
 
   const selectUnit = (u: Unit) => {
-    // Selecting any unit forces Move mode (old behavior).
+    // Selecting any unit forces Move mode (existing behavior).
     args.actionBar.setMode("move");
 
     args.unitRenderer.setSelectedUnitId(u.id);
@@ -98,10 +98,13 @@ export function createSelectionClickHandler(args: {
     let best: { dest: TileCoord; cost: number } | null = null;
 
     for (const dest of open) {
+      // FIX: GameModel.previewMovePath now requires cfg (server-auth scaffolding step).
       const path = args.model.previewMovePath(attacker.id, dest, moveBudget, args.cfg);
       if (!path || path.length < 2) continue;
+
       const cost = path.length - 1;
       if (cost <= 0 || cost > moveBudget) continue;
+
       if (!best || cost < best.cost) best = { dest, cost };
     }
 
@@ -170,19 +173,35 @@ export function createSelectionClickHandler(args: {
     args.overlayMode.applyMode(args.actionBar.getMode());
   };
 
-  const handleAttackClick = (selected: Unit | null, clickedUnit: Unit | null) => {
+  const handleAttackClick = (hit: TileHit, selected: Unit | null, clickedUnit: Unit | null) => {
     if (!selected) return;
     if (!args.turns.canActWithUnit(selected)) return;
-    if (!clickedUnit) return;
-    if (!isEnemy(selected.team, clickedUnit.team)) return;
+    if (!hit) return;
 
-    if (selected.attackType === "melee" && !isAdjacent4Way(selected, clickedUnit)) {
-      void tryMeleeChaseMove(selected, clickedUnit);
+    // Melee requires an enemy unit.
+    if (selected.attackType === "melee") {
+      if (!clickedUnit) return;
+      if (!isEnemy(selected.team, clickedUnit.team)) return;
+
+      if (!isAdjacent4Way(selected, clickedUnit)) {
+        void tryMeleeChaseMove(selected, clickedUnit);
+        return;
+      }
+
+      const res = args.turns.tryAttackUnit(selected, clickedUnit);
+      if (!res.ok) return;
+
+      args.overlayMode.applyMode(args.actionBar.getMode());
       return;
     }
 
-    const res = args.turns.tryAttackUnit(selected, clickedUnit);
+    // Ranged is tile-targeted; can fire at empty tiles if the unit supports it.
+    const canTargetEmpty = (selected.attack as any).canTargetEmptyTiles === true;
+    if (!clickedUnit && !canTargetEmpty) return;
+
+    const res = args.turns.tryAttackTile(selected, { x: hit.x, y: hit.y });
     if (!res.ok) return;
+
     args.overlayMode.applyMode(args.actionBar.getMode());
   };
 
@@ -204,13 +223,13 @@ export function createSelectionClickHandler(args: {
     }
 
     if (mode === "attack") {
-      // Fix: in attack mode, clicking any controllable unit selects it (and forces Move mode).
+      // In attack mode, clicking any controllable unit selects it (and forces Move mode).
       if (clickedUnit && args.turns.canControlUnit(clickedUnit)) {
         selectUnit(clickedUnit);
         return;
       }
 
-      handleAttackClick(selected, clickedUnit);
+      handleAttackClick(hit, selected, clickedUnit);
       return;
     }
   };

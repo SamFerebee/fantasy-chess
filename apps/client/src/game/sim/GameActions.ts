@@ -4,10 +4,19 @@ import type { GameEvent } from "./GameEvents";
 export type GameAction =
   | { type: "endTurn" }
   | { type: "move"; unitId: string; to: TileCoord }
-  | { type: "attackUnit"; attackerId: string; targetId: string };
+  | { type: "attackTile"; attackerId: string; target: TileCoord };
 
 export type ApplyResult =
-  | { ok: false; reason: "invalidUnit" | "notYourTurn" | "noAp" | "illegalMove" | "outOfRange" }
+  | {
+      ok: false;
+      reason:
+        | "invalidUnit"
+        | "notYourTurn"
+        | "noAp"
+        | "illegalMove"
+        | "outOfRange"
+        | "illegalTarget";
+    }
   | {
       ok: true;
       events: GameEvent[];

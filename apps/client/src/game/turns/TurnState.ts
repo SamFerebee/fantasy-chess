@@ -1,6 +1,16 @@
 import type { Unit, Team } from "../units/UnitTypes";
 
+export type TurnStateSnapshot = {
+  /** Monotonic, increments each time `endTurn()` is called. Starts at 1. */
+  turnNumber: number;
+  activeTeam: Team;
+  activatedUnitId: string | null;
+  /** Remaining AP for units that have been touched this turn. */
+  remainingAp: Array<{ unitId: string; ap: number }>;
+};
+
 export class TurnState {
+  private turnNumber = 1;
   private activeTeam: Team = "A";
 
   // Once a unit spends AP or attacks, the turn is locked to that unit.
@@ -8,6 +18,27 @@ export class TurnState {
 
   // Remaining AP for the currently-active team's units (lazy-initialized).
   private remainingAp = new Map<string, number>();
+
+  snapshot(): TurnStateSnapshot {
+    return {
+      turnNumber: this.turnNumber,
+      activeTeam: this.activeTeam,
+      activatedUnitId: this.activatedUnitId,
+      remainingAp: [...this.remainingAp.entries()].map(([unitId, ap]) => ({ unitId, ap })),
+    };
+  }
+
+  restore(s: TurnStateSnapshot) {
+    this.turnNumber = Math.max(1, Math.floor(s.turnNumber));
+    this.activeTeam = s.activeTeam;
+    this.activatedUnitId = s.activatedUnitId;
+    this.remainingAp.clear();
+    for (const e of s.remainingAp) this.remainingAp.set(e.unitId, e.ap);
+  }
+
+  getTurnNumber(): number {
+    return this.turnNumber;
+  }
 
   getActiveTeam(): Team {
     return this.activeTeam;
@@ -17,6 +48,7 @@ export class TurnState {
     this.activeTeam = this.activeTeam === "A" ? "B" : "A";
     this.activatedUnitId = null;
     this.remainingAp.clear();
+    this.turnNumber += 1;
   }
 
   canControlUnit(unit: Unit): boolean {
@@ -34,10 +66,7 @@ export class TurnState {
     return unit.actionPoints;
   }
 
-  /**
-   * General-purpose: "can take any action" (move, attack, etc.)
-   * Attack-specific checks should use canAttack().
-   */
+  /** General-purpose: "can take any action" (move, attack, etc.) */
   canAct(unit: Unit): boolean {
     if (!this.canControlUnit(unit)) return false;
     return this.getRemainingAp(unit) > 0;
