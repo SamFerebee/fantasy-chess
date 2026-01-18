@@ -20,10 +20,6 @@ function isAdjacent4Way(a: { x: number; y: number }, b: { x: number; y: number }
   return manhattan(a, b) === 1;
 }
 
-function findUnitAt(units: Unit[], x: number, y: number): Unit | null {
-  return units.find((u) => u.x === x && u.y === y) ?? null;
-}
-
 function isEnemy(a: Team, b: Team) {
   return a !== b;
 }
@@ -208,8 +204,9 @@ export function createSelectionClickHandler(args: {
   const onTileSelected = (hit: TileHit) => {
     if (args.movement.isAnimatingMove()) return;
 
-    const selected = args.unitRenderer.getSelectedUnit();
-    const clickedUnit = hit ? findUnitAt(args.model.getUnits(), hit.x, hit.y) : null;
+    const selectedId = args.unitRenderer.getSelectedUnitId();
+    const selected = selectedId ? args.model.getUnitById(selectedId) : null;
+    const clickedUnit = hit ? args.model.getUnitAtTile(hit.x, hit.y) : null;
     const mode = args.actionBar.getMode();
 
     if (!hit) {

@@ -7,6 +7,7 @@ import type { ActionMode } from "../../input/ActionMode";
 import type { AttackRangeOverlay } from "../../combat/AttackRangeOverlay";
 import type { ProjectilePathOverlay } from "../../combat/ProjectilePathOverlay";
 import type { Unit } from "../../units/UnitTypes";
+import type { GameModel } from "../../sim/GameModel";
 
 import { computeAttackTiles } from "../../combat/attackRange";
 import { computeProjectilePath } from "../../combat/lineOfSight";
@@ -18,6 +19,7 @@ type Tile = { x: number; y: number } | null;
 export function createOverlayModeManager(args: {
   cfg: BoardConfig;
   getUnits: () => Unit[];
+  model: GameModel;
   unitRenderer: UnitRenderer;
   turns: TurnController;
   movement: MovementController;
@@ -26,7 +28,8 @@ export function createOverlayModeManager(args: {
   projectilePathOverlay: ProjectilePathOverlay;
 }) {
   const applyMode = (mode: ActionMode) => {
-    const selected = args.unitRenderer.getSelectedUnit();
+    const selectedId = args.unitRenderer.getSelectedUnitId();
+    const selected = selectedId ? args.model.getUnitById(selectedId) : null;
 
     args.projectilePathOverlay.clear();
 
@@ -59,7 +62,8 @@ export function createOverlayModeManager(args: {
   };
 
   const handleHover = (hit: Tile) => {
-    const selected = args.unitRenderer.getSelectedUnit();
+    const selectedId = args.unitRenderer.getSelectedUnitId();
+    const selected = selectedId ? args.model.getUnitById(selectedId) : null;
 
     args.projectilePathOverlay.clear();
 

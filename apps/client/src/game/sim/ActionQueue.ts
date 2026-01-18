@@ -15,12 +15,16 @@ export class ActionQueue {
   private model: GameModel;
   private cfg: BoardConfig;
 
+  // Client-side hook to drive render-state updates from sim results.
+  private onApplied?: (res: ApplyResult) => void;
+
   private nextSeq = 1;
   private lastProcessedSeq = 0;
 
-  constructor(args: { model: GameModel; cfg: BoardConfig; startingSeq?: number }) {
+  constructor(args: { model: GameModel; cfg: BoardConfig; startingSeq?: number; onApplied?: (res: ApplyResult) => void }) {
     this.model = args.model;
     this.cfg = args.cfg;
+    this.onApplied = args.onApplied;
     if (args.startingSeq != null) this.nextSeq = Math.max(1, Math.floor(args.startingSeq));
   }
 
@@ -60,6 +64,8 @@ export class ActionQueue {
 
     const res = this.model.applyAction(cmd.action, this.cfg);
     if (res.ok) this.lastProcessedSeq = Math.max(this.lastProcessedSeq, cmd.seq);
+
+    if (res.ok) this.onApplied?.(res);
     return res;
   }
 

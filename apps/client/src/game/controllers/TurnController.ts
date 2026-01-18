@@ -9,6 +9,7 @@ import type { GameModel } from "../sim/GameModel";
 import type { ApplyResult } from "../sim/GameActions";
 import { CombatFeedback } from "../ui/CombatFeedback";
 import type { ActionQueue } from "../sim/ActionQueue";
+import type { RenderStateStore } from "../render/RenderStateStore";
 
 export class TurnController {
   private scene: Phaser.Scene;
@@ -19,6 +20,7 @@ export class TurnController {
 
   private model: GameModel;
   private actions: ActionQueue;
+  private renderStore: RenderStateStore;
 
   private hud: TurnHud;
   private feedback: CombatFeedback;
@@ -31,6 +33,7 @@ export class TurnController {
     movement: MovementController;
     model: GameModel;
     actions: ActionQueue;
+    renderStore: RenderStateStore;
   }) {
     this.scene = args.scene;
     this.cam = args.cam;
@@ -39,6 +42,7 @@ export class TurnController {
     this.movement = args.movement;
     this.model = args.model;
     this.actions = args.actions;
+    this.renderStore = args.renderStore;
 
     this.hud = new TurnHud({ scene: this.scene, cam: this.cam });
     this.feedback = new CombatFeedback({ scene: this.scene, unitRenderer: this.unitRenderer });
@@ -106,7 +110,13 @@ export class TurnController {
 
     for (const ev of res.events) {
       if (ev.type === "unitRemoved") {
-        this.feedback.playDeath(ev.unitId, () => this.unitRenderer.destroyUnitVisual(ev.unitId));
+        // Keep the unit in render-store until death animation completes, then remove.
+        this.unitRenderer.setUnitExternallyAnimating(ev.unitId, true);
+        this.feedback.playDeath(ev.unitId, () => {
+          this.unitRenderer.setUnitExternallyAnimating(ev.unitId, false);
+          this.unitRenderer.destroyUnitVisual(ev.unitId);
+          this.renderStore.finalizeRemoveUnit(ev.unitId);
+        });
       }
     }
 

@@ -16,6 +16,7 @@ import { ProjectilePathOverlay } from "../combat/ProjectilePathOverlay";
 import { UnitInfoHud } from "../ui/UnitInfoHud";
 import { GameModel } from "../sim/GameModel";
 import { ActionQueue } from "../sim/ActionQueue";
+import { RenderStateStore } from "../render/RenderStateStore";
 
 export class BoardScene extends Phaser.Scene {
   create() {
@@ -37,11 +38,21 @@ export class BoardScene extends Phaser.Scene {
     // Central simulation/model (Phaser-free)
     const model = new GameModel(units);
 
+    // Renderer-facing state (no shared object refs with sim).
+    const renderStore = new RenderStateStore();
+    renderStore.applySnapshot(model.getSnapshot());
+
     // Local sequencing scaffold (server-authoritative friendly)
-    const actions = new ActionQueue({ model, cfg });
+    const actions = new ActionQueue({
+      model,
+      cfg,
+      onApplied: (res) => {
+        if (res.ok) renderStore.applyEvents(res.events);
+      },
+    });
 
     // Rendering
-    const unitRenderer = new UnitRenderer(this, cfg, model.getUnits());
+    const unitRenderer = new UnitRenderer(this, cfg, renderStore);
     unitRenderer.create();
 
     // Overlays / input
@@ -65,11 +76,11 @@ export class BoardScene extends Phaser.Scene {
       scene: this,
       cam,
       cfg,
+      model,
+      actions,
       unitRenderer,
       moveOverlay,
       pathPreview,
-      model,
-      actions,
     });
 
     const turns = new TurnController({
@@ -80,6 +91,7 @@ export class BoardScene extends Phaser.Scene {
       movement,
       model,
       actions,
+      renderStore,
     });
 
     const actionBar = new ActionBar({
@@ -88,10 +100,7 @@ export class BoardScene extends Phaser.Scene {
       onEndTurn: () => turns.endTurn(),
     });
 
-    // Left HUD: selected unit
     const unitInfoHud = new UnitInfoHud({ scene: this, cam });
-
-    // Right HUD: enemy unit info (hover + click when no selection)
     const enemyInfoHud = new UnitInfoHud({ scene: this, cam, anchor: "right" });
     let enemyInfoUnitId: string | null = null;
 
@@ -99,8 +108,10 @@ export class BoardScene extends Phaser.Scene {
       actionBar.updatePosition();
       turns.update();
 
-      const selected = unitRenderer.getSelectedUnit();
+      const selectedId = unitRenderer.getSelectedUnitId();
+      const selected = selectedId ? model.getUnitById(selectedId) : null;
       const remainingAp = selected ? turns.getRemainingActionPoints(selected) : undefined;
+
       unitInfoHud.setUnit(selected, remainingAp);
       unitInfoHud.updatePosition();
 
