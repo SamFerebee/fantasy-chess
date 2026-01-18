@@ -97,7 +97,15 @@ export class TurnController {
    */
   tryMeleeChaseAttack(attacker: Unit, target: Unit): ApplyResult {
     if (this.movement.isAnimatingMove()) return { ok: false, reason: "notYourTurn" };
-    return this.actions.submitLocal({ type: "meleeChaseAttack", attackerId: attacker.id, targetId: target.id });
+
+    const res = this.actions.submitLocal({ type: "meleeChaseAttack", attackerId: attacker.id, targetId: target.id });
+    if (!res.ok) return res;
+
+    // If this resolved immediately as an attack (already adjacent), it may end the turn now.
+    const endedNow = res.events.some((e) => e.type === "turnEnded");
+    if (endedNow) this.clearSelectionAndOverlays();
+
+    return res;
   }
 
   endTurn() {
