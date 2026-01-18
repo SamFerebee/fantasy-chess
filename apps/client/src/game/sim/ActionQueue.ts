@@ -1,6 +1,7 @@
 import type { BoardConfig } from "../board/BoardConfig";
 import type { ClientCommandMessage, SnapshotSyncMessage } from "../net/NetMessages";
 import type { GameAction, ApplyResult } from "./GameActions";
+import type { GameEvent } from "./GameEvents";
 import type { GameSnapshot } from "./GameSnapshot";
 import type { GameModel } from "./GameModel";
 
@@ -56,7 +57,6 @@ export class ActionQueue {
    */
   applyCommand(cmd: ClientCommandMessage): ApplyResult {
     // Soft validation scaffold (should never fail for local commands).
-    // Keeping it strict makes future networking bugs easier to detect.
     const nowTurn = this.model.getTurnNumber();
     if (cmd.turnNumber !== nowTurn && cmd.action.type !== "endTurn") {
       return { ok: false, reason: "notYourTurn" };
@@ -67,6 +67,19 @@ export class ActionQueue {
 
     if (res.ok) this.onApplied?.(res);
     return res;
+  }
+
+  /**
+   * Applies already-approved events client-side (no model mutation, no seq changes).
+   *
+   * Used for staged results like meleeChaseAttack where the sim has already applied
+   * the full action, but the client wants to delay some events (e.g., hit feedback)
+   * until after an animation completes.
+   */
+  applyDeferredEvents(events: GameEvent[]) {
+    if (!events || events.length === 0) return;
+    const res: ApplyResult = { ok: true, events };
+    this.onApplied?.(res);
   }
 
   /**

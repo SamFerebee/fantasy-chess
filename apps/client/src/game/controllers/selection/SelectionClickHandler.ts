@@ -128,7 +128,7 @@ export function createSelectionClickHandler(args: {
         return;
       }
 
-      if (selected && isEnemy(selected.team, clickedUnit.team) && args.turns.canActWithUnit(selected)) {
+      if (selected && isEnemy(selected.team, clickedUnit.team)) {
         if (selected.attackType === "melee" && !isAdjacent4Way(selected, clickedUnit)) {
           void tryMeleeChaseMove(selected, clickedUnit);
           return;
@@ -146,7 +146,6 @@ export function createSelectionClickHandler(args: {
 
     if (!hit) return;
     if (!selected) return;
-    if (!args.turns.canActWithUnit(selected)) return;
 
     const moved = args.movement.tryMoveTo(hit);
     if (!moved) return;
@@ -171,7 +170,6 @@ export function createSelectionClickHandler(args: {
 
   const handleAttackClick = (hit: TileHit, selected: Unit | null, clickedUnit: Unit | null) => {
     if (!selected) return;
-    if (!args.turns.canActWithUnit(selected)) return;
     if (!hit) return;
 
     // Melee requires an enemy unit.
@@ -190,10 +188,6 @@ export function createSelectionClickHandler(args: {
       args.overlayMode.applyMode(args.actionBar.getMode());
       return;
     }
-
-    // Ranged is tile-targeted; can fire at empty tiles if the unit supports it.
-    const canTargetEmpty = (selected.attack as any).canTargetEmptyTiles === true;
-    if (!clickedUnit && !canTargetEmpty) return;
 
     const res = args.turns.tryAttackTile(selected, { x: hit.x, y: hit.y });
     if (!res.ok) return;

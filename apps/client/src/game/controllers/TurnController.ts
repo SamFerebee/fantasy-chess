@@ -1,15 +1,14 @@
 import Phaser from "phaser";
+
 import type { TileOverlay } from "../board/TileOverlay";
-import type { UnitRenderer } from "../units/UnitRenderer";
 import type { MovementController } from "../movement/MovementController";
-import type { Unit, Team } from "../units/UnitTypes";
 import type { TileCoord } from "../movement/path";
-import { TurnHud } from "../ui/TurnHud";
-import type { GameModel } from "../sim/GameModel";
-import type { ApplyResult } from "../sim/GameActions";
-import { CombatFeedback } from "../ui/CombatFeedback";
 import type { ActionQueue } from "../sim/ActionQueue";
-import type { RenderStateStore } from "../render/RenderStateStore";
+import type { ApplyResult } from "../sim/GameActions";
+import type { GameModel } from "../sim/GameModel";
+import type { Unit, Team } from "../units/UnitTypes";
+import type { UnitRenderer } from "../units/UnitRenderer";
+import { TurnHud } from "../ui/TurnHud";
 
 export class TurnController {
   private scene: Phaser.Scene;
@@ -20,10 +19,8 @@ export class TurnController {
 
   private model: GameModel;
   private actions: ActionQueue;
-  private renderStore: RenderStateStore;
 
   private hud: TurnHud;
-  private feedback: CombatFeedback;
 
   constructor(args: {
     scene: Phaser.Scene;
@@ -33,7 +30,6 @@ export class TurnController {
     movement: MovementController;
     model: GameModel;
     actions: ActionQueue;
-    renderStore: RenderStateStore;
   }) {
     this.scene = args.scene;
     this.cam = args.cam;
@@ -42,12 +38,9 @@ export class TurnController {
     this.movement = args.movement;
     this.model = args.model;
     this.actions = args.actions;
-    this.renderStore = args.renderStore;
 
     this.hud = new TurnHud({ scene: this.scene, cam: this.cam });
-    this.feedback = new CombatFeedback({ scene: this.scene, unitRenderer: this.unitRenderer });
 
-    // Key directive: pressing E should NOT end turn (especially for mobile), so no keyboard binding here.
     this.scene.events.on("postupdate", () => this.hud.updatePosition());
 
     this.refreshHud();
@@ -78,58 +71,33 @@ export class TurnController {
   }
 
   /**
-   * Tile-targeted attack (server-authoritative-friendly).
-   * Applies attack via ActionQueue, then performs UI side-effects:
-   * - hit feedback (flash + floating damage number)
-   * - death feedback (fade/shrink) then destroy unit visuals
-   * - clear selection/overlays if the action ended the turn
+   * Tile-targeted attack.
+   * All gameplay validation is in sim. This just submits the intent and does UI-only side effects.
    */
   tryAttackTile(attacker: Unit, target: TileCoord): ApplyResult {
-    if (!this.canActWithUnit(attacker)) return { ok: false, reason: "notYourTurn" };
+    if (this.movement.isAnimatingMove()) return { ok: false, reason: "notYourTurn" };
 
     const res = this.actions.submitLocal({ type: "attackTile", attackerId: attacker.id, target });
     if (!res.ok) return res;
 
-    const damagedTargets = new Set<string>();
-
-    for (const ev of res.events) {
-      if (ev.type === "unitDamaged") {
-        damagedTargets.add(ev.targetId);
-        this.feedback.playHit(ev.targetId, ev.amount);
-      }
-    }
-
-    for (const ev of res.events) {
-      if (ev.type === "unitHpChanged") {
-        if (!damagedTargets.has(ev.unitId)) {
-          // No unitDamaged event means damage was 0 for this hit.
-          this.feedback.playHit(ev.unitId, 0);
-        }
-      }
-    }
-
-    for (const ev of res.events) {
-      if (ev.type === "unitRemoved") {
-        // Keep the unit in render-store until death animation completes, then remove.
-        this.unitRenderer.setUnitExternallyAnimating(ev.unitId, true);
-        this.feedback.playDeath(ev.unitId, () => {
-          this.unitRenderer.setUnitExternallyAnimating(ev.unitId, false);
-          this.unitRenderer.destroyUnitVisual(ev.unitId);
-          this.renderStore.finalizeRemoveUnit(ev.unitId);
-        });
-      }
-    }
-
-    // If the model ended the turn, clear selection/overlays.
     const ended = res.events.some((e) => e.type === "turnEnded");
     if (ended) this.clearSelectionAndOverlays();
 
     return res;
   }
 
-  /** Convenience wrapper for older call sites that still think in "unit target". */
+  /** Convenience wrapper for existing call sites that still think in "unit target". */
   tryAttackUnit(attacker: Unit, target: Unit): ApplyResult {
     return this.tryAttackTile(attacker, { x: target.x, y: target.y });
+  }
+
+  /**
+   * Single sim-authored action: move next to target (within budget) then attack.
+   * Attack events may be staged in res.postMoveEvents.
+   */
+  tryMeleeChaseAttack(attacker: Unit, target: Unit): ApplyResult {
+    if (this.movement.isAnimatingMove()) return { ok: false, reason: "notYourTurn" };
+    return this.actions.submitLocal({ type: "meleeChaseAttack", attackerId: attacker.id, targetId: target.id });
   }
 
   endTurn() {
@@ -139,7 +107,7 @@ export class TurnController {
     this.clearSelectionAndOverlays();
   }
 
-  private clearSelectionAndOverlays() {
+  clearSelectionAndOverlays() {
     this.unitRenderer.setSelectedUnitId(null);
     this.overlay.setSelected(null);
     this.movement.setSelectedUnitId(null);

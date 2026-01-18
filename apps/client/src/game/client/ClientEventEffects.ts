@@ -1,0 +1,59 @@
+import Phaser from "phaser";
+import type { GameEvent } from "../sim/GameEvents";
+import type { RenderStateStore } from "../render/RenderStateStore";
+import type { UnitRenderer } from "../units/UnitRenderer";
+import { CombatFeedback } from "../ui/CombatFeedback";
+
+/**
+ * Client-side visual effects driven strictly from sim events.
+ *
+ * This keeps controllers free of render-store mutations and ensures all
+ * state changes flow through ActionQueue -> events.
+ */
+export class ClientEventEffects {
+  private scene: Phaser.Scene;
+  private unitRenderer: UnitRenderer;
+  private renderStore: RenderStateStore;
+  private feedback: CombatFeedback;
+
+  constructor(args: { scene: Phaser.Scene; unitRenderer: UnitRenderer; renderStore: RenderStateStore }) {
+    this.scene = args.scene;
+    this.unitRenderer = args.unitRenderer;
+    this.renderStore = args.renderStore;
+    this.feedback = new CombatFeedback({ scene: this.scene, unitRenderer: this.unitRenderer });
+  }
+
+  applyEvents(events: GameEvent[]) {
+    const damagedTargets = new Set<string>();
+
+    // Primary hit feedback (damage numbers)
+    for (const ev of events) {
+      if (ev.type === "unitDamaged") {
+        damagedTargets.add(ev.targetId);
+        this.feedback.playHit(ev.targetId, ev.amount);
+      }
+    }
+
+    // If HP changed but we didn't emit unitDamaged (e.g. 0 damage), still flash.
+    for (const ev of events) {
+      if (ev.type === "unitHpChanged") {
+        if (!damagedTargets.has(ev.unitId)) {
+          this.feedback.playHit(ev.unitId, 0);
+        }
+      }
+    }
+
+    // Death animation + finalize removal from render store.
+    for (const ev of events) {
+      if (ev.type !== "unitRemoved") continue;
+
+      this.unitRenderer.setUnitExternallyAnimating(ev.unitId, true);
+
+      this.feedback.playDeath(ev.unitId, () => {
+        this.unitRenderer.setUnitExternallyAnimating(ev.unitId, false);
+        this.unitRenderer.destroyUnitVisual(ev.unitId);
+        this.renderStore.finalizeRemoveUnit(ev.unitId);
+      });
+    }
+  }
+}

@@ -1,11 +1,16 @@
 import type { BoardConfig } from "../board/BoardConfig";
 import type { TileCoord } from "../movement/path";
-import { buildBlockedSet, isInBoundsAndNotCutout } from "../movement/movementRules";
+import { buildBlockedSet, computeReachableTiles, isInBoundsAndNotCutout } from "../movement/movementRules";
 import { getPathForMove } from "../movement/pathing";
 import type { Unit, Team } from "../units/UnitTypes";
 import { CombatResolver } from "../combat/CombatResolver";
+import { computeAttackTiles } from "../combat/attackRange";
+import type { PosUnit } from "../combat/lineOfSight";
+import { computeProjectilePath } from "../combat/lineOfSight";
+import { computeScoutProjectilePath } from "../combat/scout/ScoutShot";
 import { TurnState } from "../turns/TurnState";
 import { compareUnitId } from "../util/idSort";
+import { isAdjacent4Way } from "../rules/adjacency";
 import type { GameAction, ApplyResult } from "./GameActions";
 import type { GameEvent } from "./GameEvents";
 import type { GameSnapshot } from "./GameSnapshot";
@@ -113,6 +118,46 @@ export class GameModel {
     return this.computeMovePath(unitId, dest, maxSteps, cfg);
   }
 
+  /**
+   * Derived data: all reachable tiles within `maxSteps` for the given unit.
+   * Safe for UI previews and server validation (pure function over current state).
+   */
+  getReachableTiles(unitId: string, maxSteps: number, cfg: BoardConfig): TileCoord[] {
+    const u = this.getUnitById(unitId);
+    if (!u) return [];
+    if (maxSteps <= 0) return [];
+
+    const blocked = buildBlockedSet(this.unitsView, unitId);
+    return computeReachableTiles({ x: u.x, y: u.y }, maxSteps, cfg, blocked);
+  }
+
+  /**
+   * Derived data: all tiles that this unit can target (range overlay).
+   */
+  getAttackableTiles(unitId: string, cfg: BoardConfig): TileCoord[] {
+    const u = this.getUnitById(unitId);
+    if (!u) return [];
+    return computeAttackTiles(u, cfg);
+  }
+
+  /**
+   * Derived data: projectile/LOS preview path for a ranged attacker.
+   * Returns empty if attacker doesn't exist.
+   */
+  getProjectilePreviewPath(attackerId: string, aimTile: TileCoord): TileCoord[] {
+    const u = this.getUnitById(attackerId);
+    if (!u) return [];
+
+    const units: PosUnit[] = this.unitsView.map((x) => ({ id: x.id, x: x.x, y: x.y }));
+    const attacker: PosUnit = { id: u.id, x: u.x, y: u.y };
+
+    if (u.name === "scout") {
+      return computeScoutProjectilePath(attacker, aimTile, units);
+    }
+
+    return computeProjectilePath(attacker, aimTile, units);
+  }
+
   // ---- Deterministic action entrypoint ----
 
   applyAction(action: GameAction, cfg?: BoardConfig): ApplyResult {
@@ -126,6 +171,10 @@ export class GameModel {
 
       case "attackTile":
         return this.applyAttackTile(action.attackerId, action.target);
+
+      case "meleeChaseAttack":
+        if (!cfg) return { ok: false, reason: "illegalMove" };
+        return this.applyMeleeChaseAttack(action.attackerId, action.targetId, cfg);
 
       default:
         return { ok: false, reason: "illegalMove" };
@@ -187,14 +236,97 @@ export class GameModel {
     return { ok: true, events, movePath: path, moveCost: cost };
   }
 
+  private applyMeleeChaseAttack(attackerId: string, targetId: string, cfg: BoardConfig): ApplyResult {
+    const attacker = this.getUnitById(attackerId);
+    const target = this.getUnitById(targetId);
+    if (!attacker) return { ok: false, reason: "invalidUnit" };
+    if (!target) return { ok: false, reason: "illegalTarget" };
+
+    if (!this.turn.canControlUnit(attacker)) return { ok: false, reason: "notYourTurn" };
+    if (attacker.team === target.team) return { ok: false, reason: "illegalTarget" };
+    if (attacker.attack.kind !== "melee_adjacent") return { ok: false, reason: "illegalMove" };
+
+    // If already adjacent, just attack now (no staging needed).
+    if (isAdjacent4Way(attacker, target)) {
+      return this.applyAttackTile(attacker.id, { x: target.x, y: target.y });
+    }
+
+    const remainingAp = this.turn.getRemainingAp(attacker);
+    if (remainingAp <= 0) return { ok: false, reason: "noAp" };
+
+    const attackCost = Math.max(0, attacker.attack.apCost);
+    const moveBudget = remainingAp - attackCost;
+    if (moveBudget <= 0) return { ok: false, reason: "noAp" };
+
+    // Deterministic candidate order (stable across client/server).
+    const candidates: TileCoord[] = [
+      { x: target.x + 1, y: target.y },
+      { x: target.x - 1, y: target.y },
+      { x: target.x, y: target.y + 1 },
+      { x: target.x, y: target.y - 1 },
+    ];
+
+    let best: { dest: TileCoord; path: TileCoord[]; cost: number } | null = null;
+
+    for (const dest of candidates) {
+      const path = this.computeMovePath(attacker.id, dest, moveBudget, cfg);
+      if (!path || path.length < 2) continue;
+
+      const cost = path.length - 1;
+      if (cost <= 0 || cost > moveBudget) continue;
+
+      if (!best || cost < best.cost) best = { dest, path, cost };
+    }
+
+    if (!best) return { ok: false, reason: "illegalMove" };
+
+    // Apply the move portion now, but only emit move events immediately.
+    this.unitIdByTileKey.delete(tileKey(attacker.x, attacker.y));
+    attacker.x = best.dest.x;
+    attacker.y = best.dest.y;
+    this.unitIdByTileKey.set(tileKey(attacker.x, attacker.y), attacker.id);
+
+    this.turn.spendForMove(attacker, best.cost);
+
+    const moveEvents: GameEvent[] = [
+      { type: "unitMoved", unitId: attacker.id, x: attacker.x, y: attacker.y },
+      { type: "apChanged", unitId: attacker.id, remainingAp: this.turn.getRemainingAp(attacker) },
+    ];
+
+    // After moving, we must now be adjacent.
+    if (!isAdjacent4Way(attacker, target)) {
+      // This should not happen if pathing/occupancy are correct, but keep it strict.
+      return { ok: false, reason: "illegalMove" };
+    }
+
+    // Apply the attack portion now, but stage its events for after the move animation.
+    const atkRes = this.applyAttackTile(attacker.id, { x: target.x, y: target.y });
+    if (!atkRes.ok) return atkRes;
+
+    return {
+      ok: true,
+      events: moveEvents,
+      movePath: best.path,
+      moveCost: best.cost,
+      postMoveEvents: atkRes.events,
+    };
+  }
+
   private applyAttackTile(attackerId: string, target: TileCoord): ApplyResult {
     const attacker = this.getUnitById(attackerId);
     if (!attacker) return { ok: false, reason: "invalidUnit" };
     if (!this.turn.canControlUnit(attacker)) return { ok: false, reason: "notYourTurn" };
     if (!this.turn.canAttack(attacker)) return { ok: false, reason: "noAp" };
 
+    // Some tile-targeted attacks may forbid aiming at empty tiles.
+    const canTargetEmpty = (attacker.attack as any).canTargetEmptyTiles === true;
+    if (!canTargetEmpty) {
+      const aimed = this.getUnitAtTile(target.x, target.y);
+      if (!aimed) return { ok: false, reason: "illegalTarget" };
+    }
+
     const result = this.combat.tryAttackAtTile(attacker, target, this.unitsView);
-    if (!result.ok) return { ok: false, reason: "outOfRange" };
+    if (!result.ok) return { ok: false, reason: result.reason };
 
     if (!result.hit) {
       this.turn.spendForAttack(attacker);
