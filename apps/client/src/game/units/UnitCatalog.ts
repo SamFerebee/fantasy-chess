@@ -1,4 +1,4 @@
-import type { AttackType, Team, Unit, UnitName, UnitShape } from "./UnitTypes";
+import type { AttackProfile, AttackType, Team, Unit, UnitName, UnitShape } from "./UnitTypes";
 
 export type UnitDef = {
   name: UnitName;
@@ -6,46 +6,59 @@ export type UnitDef = {
   // Rendering placeholder
   shape: UnitShape;
 
-  // Core behavior
-  attackType: AttackType;
-
   // Turn economy
   actionPoints: number;
-
-  // Targeting
-  attackRange: number;
 
   // Combat stats
   maxHP: number;
   damage: number;
   armor: number;
+
+  /**
+   * Primary, future-proof attack definition.
+   */
+  attack: AttackProfile;
 };
 
 /**
  * Single source of truth for base unit attributes.
- * Add new unit types here (knight, dragon, etc).
  */
 export const UNIT_CATALOG: Record<UnitName, UnitDef> = {
   fighter: {
     name: "fighter",
     shape: "circle",
-    attackType: "melee",
     actionPoints: 3,
-    attackRange: 1,
     maxHP: 10,
     damage: 4,
     armor: 1,
+    attack: {
+      kind: "melee_adjacent",
+      target: "unit",
+      range: 1,
+      apCost: 1,
+      consumesRemainingAp: true,
+    },
   },
 
+  // Scout: target any tile within range 6.
+  // If straight-line path is blocked before the aim tile, and the aim delta matches
+  // an allowed pattern endpoint (currently knightShot), resolve via the pattern instead.
   scout: {
     name: "scout",
     shape: "rect",
-    attackType: "ranged",
     actionPoints: 5,
-    attackRange: 6,
     maxHP: 8,
     damage: 3,
     armor: 0,
+    attack: {
+      kind: "projectile_blockable_single",
+      target: "tile",
+      range: 6,
+      canTargetEmptyTiles: true,
+      apCost: 1,
+      consumesRemainingAp: true,
+      patternFallbackIds: ["knightShot"],
+    },
   },
 };
 
@@ -55,13 +68,39 @@ export function getUnitDef(name: UnitName): UnitDef {
   return def;
 }
 
-export function createUnitFromCatalog(args: {
-  id: string;
-  team: Team;
-  x: number;
-  y: number;
-  name: UnitName;
-}): Unit {
+function deriveLegacyAttackType(attack: AttackProfile): AttackType {
+  switch (attack.kind) {
+    case "melee_adjacent":
+    case "quake_aoe":
+      return "melee";
+
+    case "projectile_blockable_single":
+    case "projectile_unblockable_single":
+    case "line_hit_all":
+    case "pattern_shot":
+      return "ranged";
+  }
+}
+
+function deriveLegacyAttackRange(attack: AttackProfile): number {
+  switch (attack.kind) {
+    case "melee_adjacent":
+      return 1;
+
+    case "projectile_blockable_single":
+    case "projectile_unblockable_single":
+    case "line_hit_all":
+      return Math.max(0, attack.range);
+
+    case "pattern_shot":
+      return Math.max(0, attack.maxRange);
+
+    case "quake_aoe":
+      return 0;
+  }
+}
+
+export function createUnitFromCatalog(args: { id: string; team: Team; x: number; y: number; name: UnitName }): Unit {
   const def = getUnitDef(args.name);
 
   return {
@@ -72,10 +111,14 @@ export function createUnitFromCatalog(args: {
 
     name: def.name,
     shape: def.shape,
-    attackType: def.attackType,
 
     actionPoints: def.actionPoints,
-    attackRange: def.attackRange,
+
+    attack: def.attack,
+
+    // Legacy fields (derived)
+    attackType: deriveLegacyAttackType(def.attack),
+    attackRange: deriveLegacyAttackRange(def.attack),
 
     maxHP: def.maxHP,
     hp: def.maxHP,

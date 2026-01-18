@@ -1,11 +1,14 @@
 import Phaser from "phaser";
+
 import type { TileOverlay } from "../board/TileOverlay";
-import type { UnitRenderer } from "../units/UnitRenderer";
 import type { MovementController } from "../movement/MovementController";
+import type { TileCoord } from "../movement/path";
+import type { ActionQueue } from "../sim/ActionQueue";
+import type { ApplyResult } from "../sim/GameActions";
+import type { GameModel } from "../sim/GameModel";
 import type { Unit, Team } from "../units/UnitTypes";
-import { TurnState } from "../turns/TurnState";
+import type { UnitRenderer } from "../units/UnitRenderer";
 import { TurnHud } from "../ui/TurnHud";
-import { CombatResolver } from "../combat/CombatResolver";
 
 export class TurnController {
   private scene: Phaser.Scene;
@@ -14,15 +17,10 @@ export class TurnController {
   private overlay: TileOverlay;
   private movement: MovementController;
 
-  // Needed for projectile LoS (blockers)
-  private units: Unit[];
+  private model: GameModel;
+  private actions: ActionQueue;
 
-  private state = new TurnState();
   private hud: TurnHud;
-  private combat = new CombatResolver();
-
-  // When a move consumes the last AP, we auto-end AFTER the move tween finishes.
-  private pendingAutoEndAfterMove = false;
 
   constructor(args: {
     scene: Phaser.Scene;
@@ -30,112 +28,103 @@ export class TurnController {
     unitRenderer: UnitRenderer;
     overlay: TileOverlay;
     movement: MovementController;
-    units: Unit[];
+    model: GameModel;
+    actions: ActionQueue;
   }) {
     this.scene = args.scene;
     this.cam = args.cam;
     this.unitRenderer = args.unitRenderer;
     this.overlay = args.overlay;
     this.movement = args.movement;
-    this.units = args.units;
+    this.model = args.model;
+    this.actions = args.actions;
 
     this.hud = new TurnHud({ scene: this.scene, cam: this.cam });
 
-    this.scene.input.keyboard?.on("keydown-E", () => this.endTurn());
     this.scene.events.on("postupdate", () => this.hud.updatePosition());
-
-    this.scene.events.on("move:complete", () => {
-      if (this.pendingAutoEndAfterMove) {
-        this.pendingAutoEndAfterMove = false;
-        this.endTurn();
-      } else {
-        this.refreshHud();
-      }
-    });
 
     this.refreshHud();
     this.hud.updatePosition();
   }
 
+  /** Call every frame (cheap) to keep HUD in sync with model state. */
+  update() {
+    this.refreshHud();
+  }
+
   getActiveTeam(): Team {
-    return this.state.getActiveTeam();
+    return this.model.getActiveTeam();
   }
 
   canControlUnit(unit: Unit): boolean {
-    return this.state.canControlUnit(unit);
+    return this.model.canControlUnit(unit);
   }
 
   getRemainingActionPoints(unit: Unit): number {
-    return this.state.getRemainingAp(unit);
+    return this.model.getRemainingActionPoints(unit);
   }
 
   canActWithUnit(unit: Unit): boolean {
-    if (!this.state.canAct(unit)) return false;
+    if (!this.model.canActWithUnit(unit)) return false;
     if (this.movement.isAnimatingMove()) return false;
     return true;
   }
 
-  spendForMove(unit: Unit, tilesMoved: number): boolean {
-    const ok = this.state.spendForMove(unit, tilesMoved);
-    if (!ok) return false;
+  /**
+   * Tile-targeted attack.
+   * All gameplay validation is in sim. This just submits the intent and does UI-only side effects.
+   */
+  tryAttackTile(attacker: Unit, target: TileCoord): ApplyResult {
+    if (this.movement.isAnimatingMove()) return { ok: false, reason: "notYourTurn" };
 
-    this.refreshHud();
+    const res = this.actions.submitLocal({ type: "attackTile", attackerId: attacker.id, target });
+    if (!res.ok) return res;
 
-    if (this.state.getRemainingAp(unit) <= 0) {
-      if (this.movement.isAnimatingMove()) {
-        this.pendingAutoEndAfterMove = true;
-      } else {
-        this.endTurn();
-      }
-    }
+    const ended = res.events.some((e) => e.type === "turnEnded");
+    if (ended) this.clearSelectionAndOverlays();
 
-    return true;
+    return res;
+  }
+
+  /** Convenience wrapper for existing call sites that still think in "unit target". */
+  tryAttackUnit(attacker: Unit, target: Unit): ApplyResult {
+    return this.tryAttackTile(attacker, { x: target.x, y: target.y });
+  }
+
+  /**
+   * Single sim-authored action: move next to target (within budget) then attack.
+   * Attack events may be staged in res.postMoveEvents.
+   */
+  tryMeleeChaseAttack(attacker: Unit, target: Unit): ApplyResult {
+    if (this.movement.isAnimatingMove()) return { ok: false, reason: "notYourTurn" };
+
+    const res = this.actions.submitLocal({ type: "meleeChaseAttack", attackerId: attacker.id, targetId: target.id });
+    if (!res.ok) return res;
+
+    // If this resolved immediately as an attack (already adjacent), it may end the turn now.
+    const endedNow = res.events.some((e) => e.type === "turnEnded");
+    if (endedNow) this.clearSelectionAndOverlays();
+
+    return res;
   }
 
   endTurn() {
     if (this.movement.isAnimatingMove()) return;
 
-    this.pendingAutoEndAfterMove = false;
-    this.state.endTurn();
-
-    this.unitRenderer.setSelectedUnitId(null);
-    this.overlay.setSelected(null);
-    this.movement.setSelectedUnit(null);
-    this.movement.setHoverTile(null);
-
-    this.refreshHud();
+    this.actions.submitLocal({ type: "endTurn" });
+    this.clearSelectionAndOverlays();
   }
 
-  /**
-   * Attack:
-   * - requires at least 1 AP remaining
-   * - costs 1 AP and consumes all remaining AP
-   * - projectile ranged uses LoS; may hit a blocking unit instead (can be friendly)
-   */
-  tryAttack(attacker: Unit, target: Unit): boolean {
-    if (!this.canActWithUnit(attacker)) return false;
-
-    const res = this.combat.tryAttack(attacker, target, this.units);
-    if (!res.ok) return false;
-
-    if (!this.state.spendForAttack(attacker)) return false;
-
-    // Remove the actual hit unit (target or blocker)
-    this.unitRenderer.removeUnit(res.hit.id);
-
+  clearSelectionAndOverlays() {
+    this.unitRenderer.setSelectedUnitId(null);
+    this.overlay.setSelected(null);
+    this.movement.setSelectedUnitId(null);
+    this.movement.setHoverTile(null);
     this.refreshHud();
-    this.endTurn();
-    return true;
   }
 
   private refreshHud() {
-    const selected = this.unitRenderer.getSelectedUnit();
-    const team = this.state.getActiveTeam();
-    const apText =
-      selected && this.canControlUnit(selected)
-        ? `\nSelected AP: ${this.state.getRemainingAp(selected)}`
-        : "";
-
-    this.hud.setTurnInfo(team, apText);
+    const team = this.model.getActiveTeam();
+    this.hud.setTurnInfo(team, "");
   }
 }

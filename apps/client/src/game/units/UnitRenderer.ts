@@ -1,48 +1,33 @@
 import Phaser from "phaser";
 import type { BoardConfig } from "../board/BoardConfig";
 import { isoToScreen } from "../board/iso";
-import type { Unit } from "./UnitTypes";
+import type { RenderStateStore, RenderUnitState } from "../render/RenderStateStore";
 
 type UnitGO =
-  | { unit: Unit; kind: "circle"; go: Phaser.GameObjects.Arc; radius: number }
-  | { unit: Unit; kind: "rect"; go: Phaser.GameObjects.Rectangle; radius: number };
+  | { unitId: string; kind: "circle"; go: Phaser.GameObjects.Arc; radius: number }
+  | { unitId: string; kind: "rect"; go: Phaser.GameObjects.Rectangle; radius: number };
 
 export class UnitRenderer {
   private scene: Phaser.Scene;
   private cfg: BoardConfig;
-  private units: Unit[];
-  private gos: UnitGO[] = [];
+  private store: RenderStateStore;
+
+  private gosById = new Map<string, UnitGO>();
   private selectedUnitId: string | null = null;
 
-  constructor(scene: Phaser.Scene, cfg: BoardConfig, units: Unit[]) {
+  private externallyAnimating = new Set<string>();
+
+  private lastRevision = -1;
+
+  constructor(scene: Phaser.Scene, cfg: BoardConfig, store: RenderStateStore) {
     this.scene = scene;
     this.cfg = cfg;
-    this.units = units;
+    this.store = store;
   }
 
   create() {
-    const radius = Math.max(10, Math.floor(this.cfg.tileH * 0.35));
-
-    for (const u of this.units) {
-      const { sx, sy } = isoToScreen(u.x, u.y, this.cfg);
-      const px = sx;
-      const py = sy;
-
-      const fill = u.team === "A" ? 0x5aa7ff : 0xff6b6b;
-
-      if (u.shape === "rect") {
-        const w = Math.floor(this.cfg.tileW * 0.55);
-        const h = Math.floor(this.cfg.tileH * 0.55);
-
-        const rect = this.scene.add.rectangle(px, py, w, h, fill, 1).setDepth(5);
-        this.gos.push({ unit: u, kind: "rect", go: rect, radius });
-      } else {
-        const circle = this.scene.add.circle(px, py, radius, fill, 1).setDepth(5);
-        this.gos.push({ unit: u, kind: "circle", go: circle, radius });
-      }
-    }
-
-    this.applySelectionVisuals();
+    this.reconcileWithStore(true);
+    this.scene.events.on("postupdate", () => this.reconcileWithStore(false));
   }
 
   setSelectedUnitId(unitId: string | null) {
@@ -50,79 +35,112 @@ export class UnitRenderer {
     this.applySelectionVisuals();
   }
 
-  getSelectedUnit(): Unit | null {
-    if (!this.selectedUnitId) return null;
-    return this.units.find((u) => u.id === this.selectedUnitId) ?? null;
-  }
-
-  getUnitAtTile(x: number, y: number) {
-    return this.units.find((u) => u.x === x && u.y === y) ?? null;
+  getSelectedUnitId(): string | null {
+    return this.selectedUnitId;
   }
 
   getUnitDisplayObject(unitId: string): Phaser.GameObjects.GameObject | null {
-    const go = this.gos.find((g) => g.unit.id === unitId);
+    const go = this.gosById.get(unitId);
     return go ? go.go : null;
   }
 
-  moveUnitTo(unitId: string, x: number, y: number) {
-    const u = this.units.find((uu) => uu.id === unitId);
-    if (!u) return;
+  setUnitExternallyAnimating(unitId: string, animating: boolean) {
+    if (animating) this.externallyAnimating.add(unitId);
+    else this.externallyAnimating.delete(unitId);
+  }
 
-    u.x = x;
-    u.y = y;
-
+  setUnitVisualTile(unitId: string, x: number, y: number) {
     const { sx, sy } = isoToScreen(x, y, this.cfg);
-
-    const go = this.gos.find((g) => g.unit.id === unitId);
+    const go = this.gosById.get(unitId);
     if (!go) return;
-
     go.go.setPosition(sx, sy);
   }
 
-  removeUnit(unitId: string) {
-    const goIdx = this.gos.findIndex((g) => g.unit.id === unitId);
-    if (goIdx !== -1) {
-      this.gos[goIdx].go.destroy();
-      this.gos.splice(goIdx, 1);
-    }
-
-    const uIdx = this.units.findIndex((u) => u.id === unitId);
-    if (uIdx !== -1) this.units.splice(uIdx, 1);
+  destroyUnitVisual(unitId: string) {
+    const go = this.gosById.get(unitId);
+    if (!go) return;
+    go.go.destroy();
+    this.gosById.delete(unitId);
 
     if (this.selectedUnitId === unitId) this.selectedUnitId = null;
+    this.applySelectionVisuals();
+  }
+
+  /** For snapshot sync / reconciliation: kill tweens + drop external animation locks. */
+  resetVisualAnimations() {
+    for (const go of this.gosById.values()) {
+      this.scene.tweens.killTweensOf(go.go as any);
+    }
+    this.externallyAnimating.clear();
+  }
+
+  /** Force an immediate full reconcile from the RenderStateStore. */
+  forceSyncFromStore() {
+    this.reconcileWithStore(true);
+  }
+
+  private reconcileWithStore(force: boolean) {
+    const rev = this.store.getRevision();
+    if (!force && rev === this.lastRevision) return;
+    this.lastRevision = rev;
+
+    const units = this.store.getUnits();
+    const liveIds = new Set<string>();
+
+    for (const u of units) {
+      liveIds.add(u.id);
+      const existing = this.gosById.get(u.id);
+
+      if (!existing) {
+        this.gosById.set(u.id, this.createUnitGo(u));
+        continue;
+      }
+
+      const expectedKind: UnitGO["kind"] = u.shape === "rect" ? "rect" : "circle";
+      if (existing.kind !== expectedKind) {
+        existing.go.destroy();
+        this.gosById.set(u.id, this.createUnitGo(u));
+        continue;
+      }
+
+      if (!this.externallyAnimating.has(u.id)) {
+        const { sx, sy } = isoToScreen(u.x, u.y, this.cfg);
+        existing.go.setPosition(sx, sy);
+      }
+    }
+
+    for (const [unitId, go] of this.gosById.entries()) {
+      if (liveIds.has(unitId)) continue;
+      go.go.destroy();
+      this.gosById.delete(unitId);
+      this.externallyAnimating.delete(unitId);
+      if (this.selectedUnitId === unitId) this.selectedUnitId = null;
+    }
 
     this.applySelectionVisuals();
   }
 
-  pickUnitAtWorldPoint(worldX: number, worldY: number): Unit | null {
-    for (let i = this.gos.length - 1; i >= 0; i--) {
-      const go = this.gos[i];
+  private createUnitGo(u: RenderUnitState): UnitGO {
+    const radius = Math.max(10, Math.floor(this.cfg.tileH * 0.35));
+    const { sx, sy } = isoToScreen(u.x, u.y, this.cfg);
 
-      if (go.kind === "rect") {
-        const halfW = go.go.width * go.go.scaleX * 0.5;
-        const halfH = go.go.height * go.go.scaleY * 0.5;
+    const fill = u.team === "A" ? 0x5aa7ff : 0xff6b6b;
 
-        if (
-          worldX >= go.go.x - halfW &&
-          worldX <= go.go.x + halfW &&
-          worldY >= go.go.y - halfH &&
-          worldY <= go.go.y + halfH
-        ) {
-          return go.unit;
-        }
-      } else {
-        const dx = worldX - go.go.x;
-        const dy = worldY - go.go.y;
-        if (dx * dx + dy * dy <= go.radius * go.radius) return go.unit;
-      }
+    if (u.shape === "rect") {
+      const w = Math.floor(this.cfg.tileW * 0.55);
+      const h = Math.floor(this.cfg.tileH * 0.55);
+      const rect = this.scene.add.rectangle(sx, sy, w, h, fill, 1).setDepth(5);
+      return { unitId: u.id, kind: "rect", go: rect, radius };
     }
-    return null;
+
+    const circle = this.scene.add.circle(sx, sy, radius, fill, 1).setDepth(5);
+    return { unitId: u.id, kind: "circle", go: circle, radius };
   }
 
   private applySelectionVisuals() {
-    for (const go of this.gos) {
-      const selected = go.unit.id === this.selectedUnitId;
-      go.go.setStrokeStyle(selected ? 3 : 0, 0xffffff, selected ? 0.95 : 0);
+    for (const go of this.gosById.values()) {
+      const selected = go.unitId === this.selectedUnitId;
+      (go.go as any).setStrokeStyle(selected ? 3 : 0, 0xffffff, selected ? 0.95 : 0);
     }
   }
 }

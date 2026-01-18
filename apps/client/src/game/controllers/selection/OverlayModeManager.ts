@@ -6,17 +6,17 @@ import type { ActionBar } from "../../ui/ActionBar";
 import type { ActionMode } from "../../input/ActionMode";
 import type { AttackRangeOverlay } from "../../combat/AttackRangeOverlay";
 import type { ProjectilePathOverlay } from "../../combat/ProjectilePathOverlay";
-import type { Unit } from "../../units/UnitTypes";
-
-import { computeAttackTiles } from "../../combat/attackRange";
-import { computeProjectilePath } from "../../combat/lineOfSight";
-import { isInBoundsAndNotCutout } from "../../movement/movementRules";
+import type { GameModel } from "../../sim/GameModel";
 
 type Tile = { x: number; y: number } | null;
 
+function tileKey(x: number, y: number) {
+  return `${x},${y}`;
+}
+
 export function createOverlayModeManager(args: {
   cfg: BoardConfig;
-  units: Unit[];
+  model: GameModel;
   unitRenderer: UnitRenderer;
   turns: TurnController;
   movement: MovementController;
@@ -24,21 +24,32 @@ export function createOverlayModeManager(args: {
   attackOverlay: AttackRangeOverlay;
   projectilePathOverlay: ProjectilePathOverlay;
 }) {
-  const applyMode = (mode: ActionMode) => {
-    const selected = args.unitRenderer.getSelectedUnit();
+  let attackTilesSet = new Set<string>();
 
-    // Always clear projectile path unless we are actively in attack mode with a ranged unit + hover
+  const cacheAttackTiles = (unitId: string | null) => {
+    attackTilesSet = new Set<string>();
+    if (!unitId) return;
+
+    const tiles = args.model.getAttackableTiles(unitId, args.cfg);
+    for (const t of tiles) attackTilesSet.add(tileKey(t.x, t.y));
+  };
+
+  const applyMode = (mode: ActionMode) => {
+    const selectedId = args.unitRenderer.getSelectedUnitId();
+    const selected = selectedId ? args.model.getUnitById(selectedId) : null;
+
     args.projectilePathOverlay.clear();
+    attackTilesSet = new Set<string>();
 
     if (!selected || !args.turns.canControlUnit(selected)) {
       args.movement.setMoveRangeEnabled(false);
       args.movement.setHoverTile(null);
-      args.attackOverlay.setSelectedUnit(null, []);
+      args.attackOverlay.clear();
       return;
     }
 
     if (mode === "move") {
-      args.attackOverlay.setSelectedUnit(null, []);
+      args.attackOverlay.clear();
       args.movement.setMoveRangeEnabled(true, args.turns.getRemainingActionPoints(selected));
       args.movement.setHoverTile(null);
       return;
@@ -48,21 +59,23 @@ export function createOverlayModeManager(args: {
     args.movement.setHoverTile(null);
     args.movement.setMoveRangeEnabled(false);
 
-    const tiles = computeAttackTiles(selected, args.cfg);
-    args.attackOverlay.setSelectedUnit(selected, tiles);
+    const tiles = args.model.getAttackableTiles(selected.id, args.cfg);
+    args.attackOverlay.setTiles(tiles);
+    cacheAttackTiles(selected.id);
   };
 
   const clearAll = () => {
     args.movement.setMoveRangeEnabled(false);
     args.movement.setHoverTile(null);
-    args.attackOverlay.setSelectedUnit(null, []);
+    args.attackOverlay.clear();
     args.projectilePathOverlay.clear();
+    attackTilesSet = new Set<string>();
   };
 
   const handleHover = (hit: Tile) => {
-    const selected = args.unitRenderer.getSelectedUnit();
+    const selectedId = args.unitRenderer.getSelectedUnitId();
+    const selected = selectedId ? args.model.getUnitById(selectedId) : null;
 
-    // Default: clear projectile path unless we redraw it below
     args.projectilePathOverlay.clear();
 
     if (!selected || !args.turns.canActWithUnit(selected)) {
@@ -72,30 +85,23 @@ export function createOverlayModeManager(args: {
 
     const mode = args.actionBar.getMode();
 
-    // Move hover/path preview
     if (mode === "move") {
       args.movement.setHoverTile(hit);
       return;
     }
 
-    // Attack hover: only projectile/ranged gets a path preview
     if (mode === "attack") {
       if (!hit) return;
       if (selected.attackType !== "ranged") return;
 
-      // must be in bounds and within projectile range
-      if (!isInBoundsAndNotCutout(hit.x, hit.y, args.cfg)) return;
+      // Use authoritative derived data (sim) rather than recomputing range rules here.
+      if (!attackTilesSet.has(tileKey(hit.x, hit.y))) return;
 
-      const range = Math.max(0, selected.attackRange);
-      const dist = Math.abs(selected.x - hit.x) + Math.abs(selected.y - hit.y);
-      if (dist < 1 || dist > range) return;
-
-      const path = computeProjectilePath(selected, hit, args.units);
-      args.projectilePathOverlay.setPath(path);
+      const path = args.model.getProjectilePreviewPath(selected.id, hit);
+      if (path && path.length > 0) args.projectilePathOverlay.setPath(path);
       return;
     }
 
-    // fallback
     args.movement.setHoverTile(null);
   };
 

@@ -2,23 +2,47 @@ import type { BoardConfig } from "../board/BoardConfig";
 import type { Unit } from "../units/UnitTypes";
 import type { TileCoord } from "../movement/path";
 import { isInBoundsAndNotCutout } from "../movement/movementRules";
+import { tryGetPatternDef } from "./patterns/PatternLibrary";
+
+function getPrimaryRange(unit: Unit): number {
+  // Prefer attack profile; fall back to legacy field.
+  const atk = unit.attack;
+
+  switch (atk.kind) {
+    case "melee_adjacent":
+      return 1;
+
+    case "projectile_blockable_single":
+    case "projectile_unblockable_single":
+    case "line_hit_all":
+      return Math.max(0, atk.range);
+
+    case "pattern_shot":
+      return Math.max(0, atk.maxRange);
+
+    case "quake_aoe":
+      // Not a target range; keep legacy behavior of returning 0.
+      return 0;
+  }
+}
 
 export function getAttackRangeForUnit(unit: Unit): number {
-  return Math.max(0, unit.attackRange);
+  return Math.max(0, getPrimaryRange(unit));
 }
 
 /**
  * Returns all tiles in attack range (excluding the unit's own tile).
- * Uses 4-way Manhattan distance.
+ *
+ * Current overlay behavior:
+ * - melee_adjacent: 4 neighbors
+ * - quake_aoe: tiles within radius around the unit (Manhattan)
+ * - everything else: tiles within Manhattan distance <= range
  */
 export function computeAttackTiles(unit: Unit, cfg: BoardConfig): TileCoord[] {
-  const r = getAttackRangeForUnit(unit);
   const out: TileCoord[] = [];
 
-  if (r <= 0) return out;
-
-  // melee special-case: just 4 neighbors
-  if (unit.attackType === "melee") {
+  // Melee adjacency
+  if (unit.attack.kind === "melee_adjacent") {
     const cand = [
       { x: unit.x + 1, y: unit.y },
       { x: unit.x - 1, y: unit.y },
@@ -31,7 +55,46 @@ export function computeAttackTiles(unit: Unit, cfg: BoardConfig): TileCoord[] {
     return out;
   }
 
-  // ranged: all tiles within manhattan distance <= r, excluding dist 0
+  // Quake-style AOE around the unit
+  if (unit.attack.kind === "quake_aoe") {
+    const r = Math.max(0, unit.attack.radius);
+    if (r <= 0) return out;
+
+    for (let dx = -r; dx <= r; dx++) {
+      for (let dy = -r; dy <= r; dy++) {
+        const dist = Math.abs(dx) + Math.abs(dy);
+        if (dist === 0 || dist > r) continue;
+
+        const x = unit.x + dx;
+        const y = unit.y + dy;
+        if (!isInBoundsAndNotCutout(x, y, cfg)) continue;
+
+        out.push({ x, y });
+      }
+    }
+
+    return out;
+  }
+
+  // Deterministic pattern shot: show only legal endpoints (not the full Manhattan diamond).
+  if (unit.attack.kind === "pattern_shot") {
+    const def = tryGetPatternDef(unit.attack.patternId);
+    if (!def) return out;
+
+    for (const e of def.endpoints) {
+      const x = unit.x + e.x;
+      const y = unit.y + e.y;
+      if (!isInBoundsAndNotCutout(x, y, cfg)) continue;
+      out.push({ x, y });
+    }
+
+    return out;
+  }
+
+  // Ranged / line: Manhattan diamond within primary range
+  const r = getAttackRangeForUnit(unit);
+  if (r <= 0) return out;
+
   for (let dx = -r; dx <= r; dx++) {
     for (let dy = -r; dy <= r; dy++) {
       const dist = Math.abs(dx) + Math.abs(dy);

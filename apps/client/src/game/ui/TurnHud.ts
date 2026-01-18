@@ -20,7 +20,7 @@ export class TurnHud {
   }
 
   setTurnInfo(team: Team, extraLine: string) {
-    this.text.setText(`Turn: Team ${team} (press E)${extraLine}`);
+    this.text.setText(`Turn: Team ${team}${extraLine}`);
   }
 
   updatePosition() {
