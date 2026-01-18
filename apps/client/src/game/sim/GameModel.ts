@@ -7,7 +7,7 @@ import { CombatResolver } from "../combat/CombatResolver";
 import { computeAttackTiles } from "../combat/attackRange";
 import type { PosUnit } from "../combat/lineOfSight";
 import { computeProjectilePath } from "../combat/lineOfSight";
-import { computeScoutProjectilePath } from "../combat/scout/ScoutShot";
+import { resolvePatternShot } from "../combat/PatternShotResolver";
 import { TurnState } from "../turns/TurnState";
 import { compareUnitId } from "../util/idSort";
 import { isAdjacent4Way } from "../rules/adjacency";
@@ -143,19 +143,45 @@ export class GameModel {
   /**
    * Derived data: projectile/LOS preview path for a ranged attacker.
    * Returns empty if attacker doesn't exist.
+   *
+   * Rule:
+   * - Always show the normal straight-line projectile path first.
+   * - If that path is blocked before the aim tile, and the attack has fallback patterns,
+   *   and the aim matches a legal pattern endpoint, preview the pattern path instead.
    */
   getProjectilePreviewPath(attackerId: string, aimTile: TileCoord): TileCoord[] {
     const u = this.getUnitById(attackerId);
     if (!u) return [];
 
-    const units: PosUnit[] = this.unitsView.map((x) => ({ id: x.id, x: x.x, y: x.y }));
-    const attacker: PosUnit = { id: u.id, x: u.x, y: u.y };
+    const unitsPos: PosUnit[] = this.unitsView.map((x) => ({ id: x.id, x: x.x, y: x.y }));
+    const attackerPos: PosUnit = { id: u.id, x: u.x, y: u.y };
 
-    if (u.name === "scout") {
-      return computeScoutProjectilePath(attacker, aimTile, units);
+    // Default: straight-line LOS path (truncated at first blocker).
+    const losPath = computeProjectilePath(attackerPos, aimTile, unitsPos);
+    if (losPath.length === 0) return losPath;
+
+    const last = losPath[losPath.length - 1];
+    const blockedBeforeAim = last.x !== aimTile.x || last.y !== aimTile.y;
+
+    if (u.attack.kind === "projectile_blockable_single" && blockedBeforeAim) {
+      const fallbackIds = u.attack.patternFallbackIds ?? [];
+      if (fallbackIds.length > 0) {
+        for (const patternId of fallbackIds) {
+          const res = resolvePatternShot({
+            attacker: u,
+            aimTile,
+            units: this.unitsView,
+            patternId,
+            blockedByUnits: true,
+            pierceCount: undefined,
+          });
+          if (!res) continue;
+          return res.path;
+        }
+      }
     }
 
-    return computeProjectilePath(attacker, aimTile, units);
+    return losPath;
   }
 
   // ---- Deterministic action entrypoint ----
@@ -295,7 +321,6 @@ export class GameModel {
 
     // After moving, we must now be adjacent.
     if (!isAdjacent4Way(attacker, target)) {
-      // This should not happen if pathing/occupancy are correct, but keep it strict.
       return { ok: false, reason: "illegalMove" };
     }
 
@@ -331,9 +356,7 @@ export class GameModel {
     if (!result.hit) {
       this.turn.spendForAttack(attacker);
 
-      const events: GameEvent[] = [
-        { type: "apChanged", unitId: attacker.id, remainingAp: this.turn.getRemainingAp(attacker) },
-      ];
+      const events: GameEvent[] = [{ type: "apChanged", unitId: attacker.id, remainingAp: this.turn.getRemainingAp(attacker) }];
 
       if (attacker.attack.consumesRemainingAp || this.turn.getRemainingAp(attacker) <= 0) {
         this.turn.endTurn();
@@ -347,9 +370,7 @@ export class GameModel {
     if (!hitUnit) {
       this.turn.spendForAttack(attacker);
 
-      const events: GameEvent[] = [
-        { type: "apChanged", unitId: attacker.id, remainingAp: this.turn.getRemainingAp(attacker) },
-      ];
+      const events: GameEvent[] = [{ type: "apChanged", unitId: attacker.id, remainingAp: this.turn.getRemainingAp(attacker) }];
 
       if (attacker.attack.consumesRemainingAp || this.turn.getRemainingAp(attacker) <= 0) {
         this.turn.endTurn();
@@ -368,12 +389,7 @@ export class GameModel {
     const events: GameEvent[] = [];
 
     if (result.damageDealt > 0) {
-      events.push({
-        type: "unitDamaged",
-        attackerId: attacker.id,
-        targetId: hitUnit.id,
-        amount: result.damageDealt,
-      });
+      events.push({ type: "unitDamaged", attackerId: attacker.id, targetId: hitUnit.id, amount: result.damageDealt });
     }
 
     if (beforeHp !== hitUnit.hp) {

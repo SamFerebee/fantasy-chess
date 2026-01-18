@@ -20,7 +20,7 @@ export type PatternDef = {
 
   /**
    * Legal endpoints (relative to attacker tile) that can be "aimed".
-   * Example: knight shot endpoints are the 8 L-shaped offsets.
+   * Example: knight shot endpoints are L-shaped offsets.
    */
   endpoints: ReadonlyArray<TileCoord>;
 
@@ -37,25 +37,33 @@ function eq(a: TileCoord, b: TileCoord): boolean {
   return a.x === b.x && a.y === b.y;
 }
 
-function sign(n: number): -1 | 0 | 1 {
-  if (n > 0) return 1;
-  if (n < 0) return -1;
-  return 0;
+function isKnightEndpoint(endpoint: TileCoord): boolean {
+  const ax = Math.abs(endpoint.x);
+  const ay = Math.abs(endpoint.y);
+  return (ax === 2 && ay === 1) || (ax === 1 && ay === 2);
+}
+
+function isDoubleKnightEndpoint(endpoint: TileCoord): boolean {
+  const ax = Math.abs(endpoint.x);
+  const ay = Math.abs(endpoint.y);
+  return (ax === 4 && ay === 2) || (ax === 2 && ay === 4);
 }
 
 /**
- * "Knight shot" (MVP): L-shaped endpoint with a deterministic, step-wise footprint.
+ * "Knight shot" (current Scout MVP):
+ * - Knight x1: delta is (±2,±1) or (±1,±2) => allowed, ignores blockers.
+ * - Knight x2: delta is (±4,±2) or (±2,±4) => allowed ONLY if midpoint landing tile is empty.
  *
- * Endpoints: (+/-2,+/-1) and (+/-1,+/-2).
  * Footprint convention:
- * - Walk the longer axis first (2 steps), then turn to finish the shorter axis (1 step).
- * - Example endpoint ( +2, +1 ): ( +1,0 ) -> ( +2,0 ) -> ( +2,+1 )
- * - Example endpoint ( +1, +2 ): ( 0,+1 ) -> ( 0,+2 ) -> ( +1,+2 )
+ * - Knight x1: direct landing only (endpoint).
+ * - Knight x2: midpoint landing, then endpoint.
  */
 export const KNIGHT_SHOT: PatternDef = {
   id: "knightShot",
-  maxRange: 3,
+  // Manhattan max-range gate. x1 knight => 3, x2 knight => 6.
+  maxRange: 6,
   endpoints: Object.freeze([
+    // Knight x1
     { x: 2, y: 1 },
     { x: 2, y: -1 },
     { x: -2, y: 1 },
@@ -64,33 +72,31 @@ export const KNIGHT_SHOT: PatternDef = {
     { x: 1, y: -2 },
     { x: -1, y: 2 },
     { x: -1, y: -2 },
+
+    // Knight x2 (double knight)
+    { x: 4, y: 2 },
+    { x: 4, y: -2 },
+    { x: -4, y: 2 },
+    { x: -4, y: -2 },
+    { x: 2, y: 4 },
+    { x: 2, y: -4 },
+    { x: -2, y: 4 },
+    { x: -2, y: -4 },
   ]),
   buildFootprintForEndpoint: (endpoint: TileCoord) => {
     // Validate: must be a legal endpoint.
     const ok = KNIGHT_SHOT.endpoints.some((e) => eq(e, endpoint));
     if (!ok) return [];
 
-    const ax = Math.abs(endpoint.x);
-    const ay = Math.abs(endpoint.y);
-
-    const sx = sign(endpoint.x);
-    const sy = sign(endpoint.y);
-
-    const out: TileCoord[] = [];
-
-    // Longer axis first (2 steps), then shorter (1 step).
-    if (ax === 2 && ay === 1) {
-      out.push({ x: 1 * sx, y: 0 });
-      out.push({ x: 2 * sx, y: 0 });
-      out.push({ x: 2 * sx, y: 1 * sy });
-      return out;
+    // Knight x1: direct landing only.
+    if (isKnightEndpoint(endpoint)) {
+      return [{ x: endpoint.x, y: endpoint.y }];
     }
 
-    if (ax === 1 && ay === 2) {
-      out.push({ x: 0, y: 1 * sy });
-      out.push({ x: 0, y: 2 * sy });
-      out.push({ x: 1 * sx, y: 2 * sy });
-      return out;
+    // Knight x2: midpoint landing, then endpoint.
+    if (isDoubleKnightEndpoint(endpoint)) {
+      const mid = { x: endpoint.x / 2, y: endpoint.y / 2 };
+      return [mid, { x: endpoint.x, y: endpoint.y }];
     }
 
     return [];

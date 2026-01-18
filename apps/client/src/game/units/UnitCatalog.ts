@@ -41,6 +41,8 @@ export const UNIT_CATALOG: Record<UnitName, UnitDef> = {
   },
 
   // Scout: target any tile within range 6.
+  // If straight-line path is blocked before the aim tile, and the aim delta matches
+  // an allowed pattern endpoint (currently knightShot), resolve via the pattern instead.
   scout: {
     name: "scout",
     shape: "rect",
@@ -55,6 +57,7 @@ export const UNIT_CATALOG: Record<UnitName, UnitDef> = {
       canTargetEmptyTiles: true,
       apCost: 1,
       consumesRemainingAp: true,
+      patternFallbackIds: ["knightShot"],
     },
   },
 };
