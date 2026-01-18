@@ -1,9 +1,19 @@
 import type { AttackProfile, Unit } from "../units/UnitTypes";
+import type { TileCoord } from "../movement/path";
 import { isAdjacent4Way } from "../rules/adjacency";
+import { bresenhamLine } from "../util/gridLine";
+import { canScoutKnightBypass, getScoutDoubleKnightBlockerTile } from "./scout/ScoutShot";
 
 export type AttackResult =
-  | { ok: false; reason: "outOfRange" }
-  | { ok: true; killed: boolean; hit: Unit; damageDealt: number; targetHPAfter: number };
+  | { ok: false; reason: "outOfRange" | "illegalTarget" }
+  | {
+      ok: true;
+      /** Null means the attack was executed but hit no unit. */
+      hit: Unit | null;
+      damageDealt: number;
+      targetHPAfter: number | null;
+      killed: boolean;
+    };
 
 function getPrimaryRangeFromAttack(attack: AttackProfile): number {
   switch (attack.kind) {
@@ -25,39 +35,62 @@ function getPrimaryRangeFromAttack(attack: AttackProfile): number {
 
 export class CombatResolver {
   /**
-   * Current implemented behaviors:
-   * - melee_adjacent: must be adjacent (4-way)
-   * - projectile_blockable_single: must be within range gate (Manhattan); first unit on line is hit (can be friendly)
-   * - projectile_unblockable_single: must be within range gate (Manhattan); target is hit directly (ignores blockers)
-   *
-   * NOTE: other `AttackProfile.kind` values exist for future-proofing but are not resolved by this method yet.
+   * Tile-targeted attack resolution.
+   * This is the most server-authoritative-friendly surface: the client sends only an aim tile
+   * and the resolver deterministically determines what (if anything) is hit.
    */
-  tryAttack(attacker: Unit, target: Unit, units: Unit[]): AttackResult {
+  tryAttackAtTile(attacker: Unit, targetTile: TileCoord, units: Unit[]): AttackResult {
     const atk = attacker.attack;
 
-    // Melee adjacency
+    // Range gate (Manhattan) for all non-self attacks.
+    const range = getPrimaryRangeFromAttack(atk);
+    const dist = Math.abs(attacker.x - targetTile.x) + Math.abs(attacker.y - targetTile.y);
+
+    // Melee adjacency (must target an occupied enemy tile).
     if (atk.kind === "melee_adjacent") {
+      if (dist !== 1) return { ok: false, reason: "outOfRange" };
+      const target = findUnitAt(units, targetTile.x, targetTile.y);
+      if (!target) return { ok: false, reason: "illegalTarget" };
       if (!isAdjacent4Way(attacker, target)) return { ok: false, reason: "outOfRange" };
       return this.applyDamage(attacker, target);
     }
-
-    // Range gate (Manhattan) for the currently supported targeted attacks
-    const range = getPrimaryRangeFromAttack(atk);
-    const dist = Math.abs(attacker.x - target.x) + Math.abs(attacker.y - target.y);
     if (dist < 1 || dist > range) return { ok: false, reason: "outOfRange" };
 
-    // Projectile (blockable): first unit on the line wins
+    // Projectile (blockable)
     if (atk.kind === "projectile_blockable_single") {
-      const hit = firstUnitOnLine(attacker, target, units) ?? target;
+      // Scout special rules:
+      // 1) If aiming a 2x knight and the midpoint landing tile is occupied,
+      //    the shot is blocked BY THAT MIDPOINT and should hit that unit.
+      // 2) Otherwise, if aiming a valid knight (x1 or x2 with midpoint empty),
+      //    the shot hits the intended target ignoring blockers.
+      if (attacker.name === "scout") {
+        const blockerMid = getScoutDoubleKnightBlockerTile(attacker, targetTile, units);
+        if (blockerMid) {
+          const hit = units.find((u) => u.x === blockerMid.x && u.y === blockerMid.y) ?? null;
+          if (hit) return this.applyDamage(attacker, hit);
+        }
+
+        const bypass = canScoutKnightBypass(attacker, targetTile, units);
+        if (bypass) {
+          const hit = findUnitAt(units, targetTile.x, targetTile.y);
+          if (!hit) return { ok: true, hit: null, damageDealt: 0, targetHPAfter: null, killed: false };
+          return this.applyDamage(attacker, hit);
+        }
+      }
+
+      // Normal behavior: first unit on the line wins (inclusive of target tile if occupied).
+      const hit = firstUnitOnLineToTile(attacker, targetTile, units);
+      if (!hit) return { ok: true, hit: null, damageDealt: 0, targetHPAfter: null, killed: false };
       return this.applyDamage(attacker, hit);
     }
 
-    // Projectile (unblockable): ignore blockers and hit the intended target
+    // Projectile (unblockable)
     if (atk.kind === "projectile_unblockable_single") {
-      return this.applyDamage(attacker, target);
+      const hit = findUnitAt(units, targetTile.x, targetTile.y);
+      if (!hit) return { ok: true, hit: null, damageDealt: 0, targetHPAfter: null, killed: false };
+      return this.applyDamage(attacker, hit);
     }
 
-    // Not implemented in this resolver API yet (needs tile targeting / multi-hit return types).
     return { ok: false, reason: "outOfRange" };
   }
 
@@ -68,9 +101,12 @@ export class CombatResolver {
     const hpAfter = Math.max(0, target.hp - mitigated);
     const killed = hpAfter <= 0;
 
-    // Note: This resolver returns the computed outcome. Actual mutation/state updates
-    // should be performed by the game state system that calls CombatResolver.
     return { ok: true, killed, hit: target, damageDealt: mitigated, targetHPAfter: hpAfter };
+  }
+
+  /** Backwards-compatible helper for older call sites (unit-targeted). */
+  tryAttack(attacker: Unit, target: Unit, units: Unit[]): AttackResult {
+    return this.tryAttackAtTile(attacker, { x: target.x, y: target.y }, units);
   }
 }
 
@@ -78,59 +114,27 @@ function keyXY(x: number, y: number) {
   return `${x},${y}`;
 }
 
+function findUnitAt(units: Unit[], x: number, y: number): Unit | null {
+  return units.find((u) => u.x === x && u.y === y) ?? null;
+}
+
 /**
  * Returns the first unit encountered along the straight line from attacker -> target
- * (excluding the attacker's own tile), inclusive of the target tile.
+ * (excluding attacker tile), inclusive of the target tile.
  */
-function firstUnitOnLine(attacker: Unit, target: Unit, units: Unit[]): Unit | null {
+function firstUnitOnLineToTile(attacker: Unit, targetTile: TileCoord, units: Unit[]): Unit | null {
   const byPos = new Map<string, Unit>();
   for (const u of units) byPos.set(keyXY(u.x, u.y), u);
 
-  const line = bresenham(attacker.x, attacker.y, target.x, target.y);
+  const line = bresenhamLine(attacker.x, attacker.y, targetTile.x, targetTile.y);
 
-  // Skip index 0 (attacker tile). Scan forward and return the first unit we see.
   for (let i = 1; i < line.length; i++) {
     const p = line[i];
     const u = byPos.get(keyXY(p.x, p.y));
     if (!u) continue;
     if (u.id === attacker.id) continue;
-    return u; // can be friendly or enemy; "first blocker wins"
+    return u;
   }
 
   return null;
-}
-
-/**
- * Bresenham line on grid coordinates (x,y). Returns inclusive endpoints.
- */
-function bresenham(x0: number, y0: number, x1: number, y1: number): Array<{ x: number; y: number }> {
-  const out: Array<{ x: number; y: number }> = [];
-
-  let x = x0;
-  let y = y0;
-
-  const dx = Math.abs(x1 - x0);
-  const dy = Math.abs(y1 - y0);
-
-  const sx = x0 < x1 ? 1 : -1;
-  const sy = y0 < y1 ? 1 : -1;
-
-  let err = dx - dy;
-
-  while (true) {
-    out.push({ x, y });
-    if (x === x1 && y === y1) break;
-
-    const e2 = err * 2;
-    if (e2 > -dy) {
-      err -= dy;
-      x += sx;
-    }
-    if (e2 < dx) {
-      err += dx;
-      y += sy;
-    }
-  }
-
-  return out;
 }

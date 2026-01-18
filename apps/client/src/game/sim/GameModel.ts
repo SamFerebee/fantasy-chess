@@ -7,6 +7,7 @@ import { CombatResolver } from "../combat/CombatResolver";
 import { TurnState } from "../turns/TurnState";
 import type { GameAction, ApplyResult } from "./GameActions";
 import type { GameEvent } from "./GameEvents";
+import type { GameSnapshot } from "./GameSnapshot";
 
 export type RNG = { nextFloat: () => number };
 
@@ -33,6 +34,10 @@ export class GameModel {
     return this.turn.getActiveTeam();
   }
 
+  getTurnNumber(): number {
+    return this.turn.getTurnNumber();
+  }
+
   getUnitById(id: string): Unit | null {
     return this.units.find((u) => u.id === id) ?? null;
   }
@@ -57,6 +62,25 @@ export class GameModel {
     return this.turn.canAttack(unit);
   }
 
+  // ---- Snapshotting (server-authoritative friendly) ----
+
+  getSnapshot(): GameSnapshot {
+    return {
+      version: 1,
+      units: this.units.map(cloneUnit),
+      turn: this.turn.snapshot(),
+    };
+  }
+
+  restoreFromSnapshot(snap: GameSnapshot) {
+    if (snap.version !== 1) {
+      throw new Error(`Unsupported GameSnapshot version: ${String((snap as any).version)}`);
+    }
+
+    this.units = snap.units.map(cloneUnit);
+    this.turn.restore(snap.turn);
+  }
+
   /**
    * Public, non-mutating move path preview.
    * Safe to use from UI/controllers (and later: client prediction) without changing model state.
@@ -76,8 +100,9 @@ export class GameModel {
         if (!cfg) return { ok: false, reason: "illegalMove" };
         return this.applyMove(action.unitId, action.to, cfg);
 
-      case "attackUnit":
-        return this.applyAttackUnit(action.attackerId, action.targetId);
+      // FIX (line ~101/102): GameAction uses attackTile, not attackUnit.
+      case "attackTile":
+        return this.applyAttackTile(action.attackerId, action.target);
 
       default:
         return { ok: false, reason: "illegalMove" };
@@ -106,8 +131,7 @@ export class GameModel {
     }
 
     const blocked = buildBlockedSet(this.units, unitId);
-    const path = getPathForMove(u, dest, maxSteps, cfg, blocked);
-    return path;
+    return getPathForMove(u, dest, maxSteps, cfg, blocked);
   }
 
   private applyMove(unitId: string, to: TileCoord, cfg: BoardConfig): ApplyResult {
@@ -143,40 +167,71 @@ export class GameModel {
     return { ok: true, events, movePath: path, moveCost: cost };
   }
 
-  private applyAttackUnit(attackerId: string, targetId: string): ApplyResult {
+  private applyAttackTile(attackerId: string, target: TileCoord): ApplyResult {
     const attacker = this.getUnitById(attackerId);
-    const target = this.getUnitById(targetId);
-
-    if (!attacker || !target) return { ok: false, reason: "invalidUnit" };
+    if (!attacker) return { ok: false, reason: "invalidUnit" };
     if (!this.turn.canControlUnit(attacker)) return { ok: false, reason: "notYourTurn" };
     if (!this.turn.canAttack(attacker)) return { ok: false, reason: "noAp" };
 
-    const result = this.combat.tryAttack(attacker, target, this.units);
+    // Allows targeting empty tiles for scouts; CombatResolver decides hit unit (or null).
+    const result = this.combat.tryAttackAtTile(attacker, target, this.units);
     if (!result.ok) return { ok: false, reason: "outOfRange" };
 
-    const hitId = result.hit.id;
-    const hitUnit = this.getUnitById(hitId);
-    if (!hitUnit) {
-      // Defensive; should not happen.
+    // FIX (line ~179): result.hit can be null for empty-tile shots (or pure “miss”).
+    if (!result.hit) {
       this.turn.spendForAttack(attacker);
+
       const events: GameEvent[] = [
         { type: "apChanged", unitId: attacker.id, remainingAp: this.turn.getRemainingAp(attacker) },
       ];
+
       if (attacker.attack.consumesRemainingAp || this.turn.getRemainingAp(attacker) <= 0) {
         this.turn.endTurn();
         events.push({ type: "turnEnded", activeTeam: this.turn.getActiveTeam() });
       }
+
+      return { ok: true, events };
+    }
+
+    const hitId = result.hit.id;
+    const hitUnit = this.getUnitById(hitId);
+
+    if (!hitUnit) {
+      // Defensive; should not happen.
+      this.turn.spendForAttack(attacker);
+
+      const events: GameEvent[] = [
+        { type: "apChanged", unitId: attacker.id, remainingAp: this.turn.getRemainingAp(attacker) },
+      ];
+
+      if (attacker.attack.consumesRemainingAp || this.turn.getRemainingAp(attacker) <= 0) {
+        this.turn.endTurn();
+        events.push({ type: "turnEnded", activeTeam: this.turn.getActiveTeam() });
+      }
+
       return { ok: true, events };
     }
 
     // Apply damage results.
     const beforeHp = hitUnit.hp;
-    hitUnit.hp = result.targetHPAfter;
+
+    // FIX (line ~194): targetHPAfter can be null if hit==null; we’re in hit!=null branch,
+    // but keep a defensive guard in case resolver returns inconsistent values.
+    if (result.targetHPAfter != null) {
+      hitUnit.hp = result.targetHPAfter;
+    }
 
     const events: GameEvent[] = [];
+
     if (result.damageDealt > 0) {
-      events.push({ type: "unitDamaged", attackerId: attacker.id, targetId: hitUnit.id, amount: result.damageDealt });
+      events.push({
+        type: "unitDamaged",
+        attackerId: attacker.id,
+        targetId: hitUnit.id,
+        amount: result.damageDealt,
+      });
     }
+
     if (beforeHp !== hitUnit.hp) {
       events.push({ type: "unitHpChanged", unitId: hitUnit.id, hp: hitUnit.hp, maxHP: hitUnit.maxHP });
     }
@@ -197,4 +252,11 @@ export class GameModel {
 
     return { ok: true, events };
   }
+}
+
+function cloneUnit(u: Unit): Unit {
+  return {
+    ...u,
+    attack: { ...(u.attack as any) } as any,
+  };
 }

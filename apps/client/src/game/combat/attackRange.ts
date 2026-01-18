@@ -2,6 +2,7 @@ import type { BoardConfig } from "../board/BoardConfig";
 import type { Unit } from "../units/UnitTypes";
 import type { TileCoord } from "../movement/path";
 import { isInBoundsAndNotCutout } from "../movement/movementRules";
+import { tryGetPatternDef } from "./patterns/PatternLibrary";
 
 function getPrimaryRange(unit: Unit): number {
   // Prefer attack profile; fall back to legacy field.
@@ -75,7 +76,22 @@ export function computeAttackTiles(unit: Unit, cfg: BoardConfig): TileCoord[] {
     return out;
   }
 
-  // Ranged / pattern / line: Manhattan diamond within primary range
+  // Deterministic pattern shot: show only legal endpoints (not the full Manhattan diamond).
+  if (unit.attack.kind === "pattern_shot") {
+    const def = tryGetPatternDef(unit.attack.patternId);
+    if (!def) return out;
+
+    for (const e of def.endpoints) {
+      const x = unit.x + e.x;
+      const y = unit.y + e.y;
+      if (!isInBoundsAndNotCutout(x, y, cfg)) continue;
+      out.push({ x, y });
+    }
+
+    return out;
+  }
+
+  // Ranged / line: Manhattan diamond within primary range
   const r = getAttackRangeForUnit(unit);
   if (r <= 0) return out;
 

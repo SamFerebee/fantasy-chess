@@ -1,4 +1,5 @@
 import type { Team } from "../units/UnitTypes";
+import type { TileCoord } from "../movement/path";
 
 export type GameEvent =
   | { type: "turnEnded"; activeTeam: Team }
@@ -6,4 +7,5 @@ export type GameEvent =
   | { type: "unitRemoved"; unitId: string }
   | { type: "apChanged"; unitId: string; remainingAp: number }
   | { type: "unitHpChanged"; unitId: string; hp: number; maxHP: number }
-  | { type: "unitDamaged"; attackerId: string; targetId: string; amount: number };
+  | { type: "unitDamaged"; attackerId: string; targetId: string; amount: number }
+  | { type: "attackMissed"; attackerId: string; target: TileCoord };

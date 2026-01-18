@@ -10,6 +10,7 @@ import type { Unit } from "../../units/UnitTypes";
 
 import { computeAttackTiles } from "../../combat/attackRange";
 import { computeProjectilePath } from "../../combat/lineOfSight";
+import { computeScoutProjectilePath } from "../../combat/scout/ScoutShot";
 import { isInBoundsAndNotCutout } from "../../movement/movementRules";
 
 type Tile = { x: number; y: number } | null;
@@ -84,7 +85,15 @@ export function createOverlayModeManager(args: {
       const dist = Math.abs(selected.x - hit.x) + Math.abs(selected.y - hit.y);
       if (dist < 1 || dist > range) return;
 
-      const path = computeProjectilePath(selected, hit, args.getUnits());
+      const units = args.getUnits();
+
+      if (selected.name === "scout") {
+        const path = computeScoutProjectilePath(selected, hit, units);
+        args.projectilePathOverlay.setPath(path);
+        return;
+      }
+
+      const path = computeProjectilePath(selected, hit, units);
       args.projectilePathOverlay.setPath(path);
       return;
     }
