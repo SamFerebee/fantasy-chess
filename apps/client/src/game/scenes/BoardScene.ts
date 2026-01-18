@@ -88,7 +88,12 @@ export class BoardScene extends Phaser.Scene {
       onEndTurn: () => turns.endTurn(),
     });
 
+    // Left HUD: selected unit
     const unitInfoHud = new UnitInfoHud({ scene: this, cam });
+
+    // Right HUD: enemy unit info (hover + click when no selection)
+    const enemyInfoHud = new UnitInfoHud({ scene: this, cam, anchor: "right" });
+    let enemyInfoUnitId: string | null = null;
 
     this.events.on("postupdate", () => {
       actionBar.updatePosition();
@@ -98,6 +103,10 @@ export class BoardScene extends Phaser.Scene {
       const remainingAp = selected ? turns.getRemainingActionPoints(selected) : undefined;
       unitInfoHud.setUnit(selected, remainingAp);
       unitInfoHud.updatePosition();
+
+      const enemy = enemyInfoUnitId ? model.getUnitById(enemyInfoUnitId) : null;
+      enemyInfoHud.setUnit(enemy);
+      enemyInfoHud.updatePosition();
     });
 
     new SelectionController({
@@ -113,6 +122,9 @@ export class BoardScene extends Phaser.Scene {
       actionBar,
       attackOverlay,
       projectilePathOverlay,
+      onEnemyInfoUnitChanged: (unitId) => {
+        enemyInfoUnitId = unitId;
+      },
     }).attach();
   }
 }
