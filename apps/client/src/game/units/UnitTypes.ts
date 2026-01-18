@@ -48,6 +48,17 @@ export type AttackProfile =
       range: number;
       /** Allow firing at empty tiles (current behavior). */
       canTargetEmptyTiles: true;
+
+      /**
+       * Optional fallback patterns that are ONLY considered when the straight-line
+       * projectile path is blocked before the aim tile.
+       *
+       * Intended behavior:
+       * - aim anywhere within range
+       * - resolve as normal LOS projectile
+       * - if blocked early, and aim delta matches a pattern endpoint, resolve via that pattern instead
+       */
+      patternFallbackIds?: string[];
     })
   | (AttackBase & {
       kind: "projectile_unblockable_single";
