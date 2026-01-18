@@ -5,16 +5,16 @@ import type { AttackRangeOverlay } from "../combat/AttackRangeOverlay";
 import type { ProjectilePathOverlay } from "../combat/ProjectilePathOverlay";
 import type { TilePicker } from "../input/TilePicker";
 import type { MovementController } from "../movement/MovementController";
-import type { UnitRenderer } from "../units/UnitRenderer";
-import type { ActionBar } from "../ui/ActionBar";
-import type { TurnController } from "./TurnController";
+import type { RenderStateStore } from "../render/RenderStateStore";
 import type { GameModel } from "../sim/GameModel";
+import type { ActionBar } from "../ui/ActionBar";
+import type { UnitRenderer } from "../units/UnitRenderer";
+import type { TurnController } from "./TurnController";
 
 import { createOverlayModeManager } from "./selection/OverlayModeManager";
 import { createSelectionClickHandler } from "./selection/SelectionClickHandler";
 
 export class SelectionController {
-  private scene: Phaser.Scene;
   private picker: TilePicker;
   private overlay: TileOverlay;
   private unitRenderer: UnitRenderer;
@@ -22,18 +22,11 @@ export class SelectionController {
   private turns: TurnController;
   private actionBar: ActionBar;
   private model: GameModel;
+  private renderStore: RenderStateStore;
 
   private overlayMode: ReturnType<typeof createOverlayModeManager>;
   private clickHandler: ReturnType<typeof createSelectionClickHandler>;
 
-  // Enemy HUD state:
-  // - pinnedEnemyId: set by click when NO FRIENDLY unit is selected (keeps info up)
-  // - hoverEnemyId: transient; overrides pinned while hovering an enemy tile/unit
-  //
-  // Spec behavior:
-  // - Hover enemy => show hovered
-  // - Click enemy with no friendly selected => show/pin clicked enemy (mobile equivalent)
-  // - If you later hover a DIFFERENT enemy, HUD shows hovered; when hover ends => clears (no revert)
   private pinnedEnemyId: string | null = null;
   private hoverEnemyId: string | null = null;
   private lastEmittedEnemyId: string | null = null;
@@ -45,6 +38,7 @@ export class SelectionController {
     cam: Phaser.Cameras.Scene2D.Camera;
     cfg: BoardConfig;
     model: GameModel;
+    renderStore: RenderStateStore;
     picker: TilePicker;
     overlay: TileOverlay;
     unitRenderer: UnitRenderer;
@@ -55,7 +49,6 @@ export class SelectionController {
     projectilePathOverlay: ProjectilePathOverlay;
     onEnemyInfoUnitChanged?: (unitId: string | null) => void;
   }) {
-    this.scene = args.scene;
     this.picker = args.picker;
     this.overlay = args.overlay;
     this.unitRenderer = args.unitRenderer;
@@ -63,14 +56,15 @@ export class SelectionController {
     this.turns = args.turns;
     this.actionBar = args.actionBar;
     this.model = args.model;
+    this.renderStore = args.renderStore;
 
     this.onEnemyInfoUnitChanged = args.onEnemyInfoUnitChanged ?? (() => {});
 
-    const getUnits = () => args.model.getUnits();
+    const getLosUnits = () => this.renderStore.getUnits().map((u) => ({ id: u.id, x: u.x, y: u.y }));
 
     this.overlayMode = createOverlayModeManager({
       cfg: args.cfg,
-      getUnits,
+      getLosUnits,
       model: args.model,
       unitRenderer: this.unitRenderer,
       turns: this.turns,
@@ -100,24 +94,26 @@ export class SelectionController {
     const selId = this.unitRenderer.getSelectedUnitId();
     if (!selId) return false;
 
-    const sel = this.model.getUnitById(selId);
-    if (!sel) return false;
+    const u = this.renderStore.getUnit(selId);
+    if (!u) return false;
 
-    return sel.team === this.getActiveTeam();
+    return u.team === this.getActiveTeam();
   }
 
   private getEnemyIdAtTile(hit: { x: number; y: number } | null): string | null {
     if (!hit) return null;
 
-    const active = this.getActiveTeam();
-    const u = this.model.getUnitAtTile(hit.x, hit.y);
+    const id = this.renderStore.getUnitIdAtTile(hit.x, hit.y);
+    if (!id) return null;
+
+    const u = this.renderStore.getUnit(id);
     if (!u) return null;
 
+    const active = this.getActiveTeam();
     return u.team !== active ? u.id : null;
   }
 
   private emitEnemyHudIfChanged(force?: boolean) {
-    // If a friendly is selected, clicks should not pin.
     if (this.isFriendlySelected()) {
       this.pinnedEnemyId = null;
 
@@ -129,9 +125,6 @@ export class SelectionController {
       return;
     }
 
-    // No friendly selected:
-    // - hover overrides pin
-    // - if not hovering an enemy, show pinned (if any)
     const effective = this.hoverEnemyId ?? this.pinnedEnemyId;
     if (force || effective !== this.lastEmittedEnemyId) {
       this.lastEmittedEnemyId = effective;
@@ -140,10 +133,8 @@ export class SelectionController {
   }
 
   attach() {
-    // Mode changes update overlays (move range vs attack range).
     this.actionBar.onModeChanged((mode) => this.overlayMode.applyMode(mode));
 
-    // Hover updates the tile outline + (in attack mode) projectile path preview + enemy HUD.
     this.picker.onHover((hit) => {
       this.overlay.setHovered(hit);
       this.overlayMode.handleHover(hit);
@@ -151,9 +142,6 @@ export class SelectionController {
       const hoveredEnemyId = this.getEnemyIdAtTile(hit);
       this.hoverEnemyId = hoveredEnemyId;
 
-      // If you hover a DIFFERENT enemy than the pinned one, clear the pin so that
-      // hover-out results in "nothing" (no revert).
-      // Do NOT clear if you are hovering the pinned enemy itself, or click wouldn't persist.
       if (hoveredEnemyId && this.pinnedEnemyId && hoveredEnemyId !== this.pinnedEnemyId) {
         this.pinnedEnemyId = null;
       }
@@ -161,18 +149,15 @@ export class SelectionController {
       this.emitEnemyHudIfChanged();
     });
 
-    // Click selection / actions + enemy HUD pinning behavior.
     this.picker.onSelect((hit) => {
-      // Click-pin only when NO FRIENDLY unit is selected.
       if (!this.isFriendlySelected()) {
         this.pinnedEnemyId = this.getEnemyIdAtTile(hit);
-        this.emitEnemyHudIfChanged(true); // immediate update (don't wait for hover)
+        this.emitEnemyHudIfChanged(true);
       }
 
       this.clickHandler.onTileSelected(hit);
     });
 
-    // Initialize for default action mode.
     this.overlayMode.applyMode(this.actionBar.getMode());
     this.emitEnemyHudIfChanged(true);
   }

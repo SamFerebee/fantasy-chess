@@ -1,7 +1,21 @@
 import Phaser from "phaser";
-import type { Unit } from "../units/UnitTypes";
 
 type HudAnchor = "left" | "right";
+
+/**
+ * Minimal, renderer-facing state for HUD display.
+ *
+ * IMPORTANT: This must not use sim Unit objects.
+ */
+export type HudUnitState = {
+  id: string;
+  name: string;
+  hp: number;
+  maxHP: number;
+  maxActionPoints: number;
+  damage: number;
+  armor: number;
+};
 
 export class UnitInfoHud {
   private cam: Phaser.Cameras.Scene2D.Camera;
@@ -40,14 +54,14 @@ export class UnitInfoHud {
 
   /**
    * @param currentActionPoints Remaining AP for the unit.
-   *                           If omitted, shows unit.actionPoints (max).
+   *                           If omitted, shows maxActionPoints.
    */
-  setUnit(unit: Unit | null, currentActionPoints?: number) {
+  setUnit(unit: HudUnitState | null, currentActionPoints?: number) {
     const next = unit
       ? [
           `Unit: ${unit.name}`,
           `HP: ${unit.hp}/${unit.maxHP}`,
-          `Action Points: ${(currentActionPoints ?? unit.actionPoints)}/${unit.actionPoints}`,
+          `Action Points: ${(currentActionPoints ?? unit.maxActionPoints)}/${unit.maxActionPoints}`,
           `Damage: ${unit.damage}`,
           `Armor: ${unit.armor}`,
         ].join("\n")

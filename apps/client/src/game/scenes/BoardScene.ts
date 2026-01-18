@@ -13,12 +13,16 @@ import { PathPreviewOverlay } from "../movement/PathPreviewOverlay";
 import { ActionBar } from "../ui/ActionBar";
 import { AttackRangeOverlay } from "../combat/AttackRangeOverlay";
 import { ProjectilePathOverlay } from "../combat/ProjectilePathOverlay";
-import { UnitInfoHud } from "../ui/UnitInfoHud";
+import { UnitInfoHud, type HudUnitState } from "../ui/UnitInfoHud";
 import { GameModel } from "../sim/GameModel";
 import { ActionQueue } from "../sim/ActionQueue";
 import { RenderStateStore } from "../render/RenderStateStore";
+import { getUnitDef } from "../units/UnitCatalog";
+import { SnapshotSyncClient } from "../net/SnapshotSyncClient";
 
 export class BoardScene extends Phaser.Scene {
+  private snapshotSync!: SnapshotSyncClient;
+
   create() {
     const cfg = BOARD;
 
@@ -35,14 +39,11 @@ export class BoardScene extends Phaser.Scene {
 
     const units = createInitialUnits();
 
-    // Central simulation/model (Phaser-free)
     const model = new GameModel(units);
 
-    // Renderer-facing state (no shared object refs with sim).
     const renderStore = new RenderStateStore();
     renderStore.applySnapshot(model.getSnapshot());
 
-    // Local sequencing scaffold (server-authoritative friendly)
     const actions = new ActionQueue({
       model,
       cfg,
@@ -51,16 +52,13 @@ export class BoardScene extends Phaser.Scene {
       },
     });
 
-    // Rendering
     const unitRenderer = new UnitRenderer(this, cfg, renderStore);
     unitRenderer.create();
 
-    // Overlays / input
-    const moveOverlay = new MoveRangeOverlay(this, cfg, model.getUnits());
-    moveOverlay.setSelectedUnit(null, []);
+    const moveOverlay = new MoveRangeOverlay(this, cfg);
+    moveOverlay.setReachableTiles([]);
 
     const attackOverlay = new AttackRangeOverlay(this, cfg);
-
     const overlay = new TileOverlay(this, cfg);
     const picker = new TilePicker(this, cfg, cam);
 
@@ -79,6 +77,7 @@ export class BoardScene extends Phaser.Scene {
       model,
       actions,
       unitRenderer,
+      renderStore,
       moveOverlay,
       pathPreview,
     });
@@ -104,19 +103,49 @@ export class BoardScene extends Phaser.Scene {
     const enemyInfoHud = new UnitInfoHud({ scene: this, cam, anchor: "right" });
     let enemyInfoUnitId: string | null = null;
 
+    const toHudUnit = (unitId: string | null): HudUnitState | null => {
+      if (!unitId) return null;
+      const ru = renderStore.getUnit(unitId);
+      if (!ru) return null;
+
+      const def = getUnitDef(ru.name);
+      return {
+        id: ru.id,
+        name: ru.name,
+        hp: ru.hp,
+        maxHP: ru.maxHP,
+        maxActionPoints: def.actionPoints,
+        damage: def.damage,
+        armor: def.armor,
+      };
+    };
+
+    this.snapshotSync = new SnapshotSyncClient({
+      model,
+      renderStore,
+      unitRenderer,
+      movement,
+      overlay,
+      onAfterSync: () => {
+        if (enemyInfoUnitId && !renderStore.getUnit(enemyInfoUnitId)) enemyInfoUnitId = null;
+      },
+    });
+
     this.events.on("postupdate", () => {
       actionBar.updatePosition();
       turns.update();
 
       const selectedId = unitRenderer.getSelectedUnitId();
-      const selected = selectedId ? model.getUnitById(selectedId) : null;
-      const remainingAp = selected ? turns.getRemainingActionPoints(selected) : undefined;
+      const selectedHud = toHudUnit(selectedId);
 
-      unitInfoHud.setUnit(selected, remainingAp);
+      const selectedSim = selectedId ? model.getUnitById(selectedId) : null;
+      const remainingAp = selectedSim ? turns.getRemainingActionPoints(selectedSim) : undefined;
+
+      unitInfoHud.setUnit(selectedHud, remainingAp);
       unitInfoHud.updatePosition();
 
-      const enemy = enemyInfoUnitId ? model.getUnitById(enemyInfoUnitId) : null;
-      enemyInfoHud.setUnit(enemy);
+      const enemyHud = toHudUnit(enemyInfoUnitId);
+      enemyInfoHud.setUnit(enemyHud);
       enemyInfoHud.updatePosition();
     });
 
@@ -125,6 +154,7 @@ export class BoardScene extends Phaser.Scene {
       cam,
       cfg,
       model,
+      renderStore,
       picker,
       overlay,
       unitRenderer,

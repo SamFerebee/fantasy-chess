@@ -1,5 +1,4 @@
-import type { Unit } from "../../units/UnitTypes";
-import type { TileCoord } from "../lineOfSight";
+import type { PosUnit, TileCoord } from "../lineOfSight";
 import { computeProjectilePath } from "../lineOfSight";
 
 function keyXY(x: number, y: number) {
@@ -22,7 +21,7 @@ function isDoubleKnightDelta(dx: number, dy: number): boolean {
  * For double-knight attempts only:
  * returns the midpoint landing tile if it is occupied (this is the ONLY blocker for 2x knight).
  */
-export function getScoutDoubleKnightBlockerTile(attacker: Unit, aimTile: TileCoord, units: Unit[]): TileCoord | null {
+export function getScoutDoubleKnightBlockerTile(attacker: PosUnit, aimTile: TileCoord, units: PosUnit[]): TileCoord | null {
   const dx = aimTile.x - attacker.x;
   const dy = aimTile.y - attacker.y;
   if (!isDoubleKnightDelta(dx, dy)) return null;
@@ -30,7 +29,7 @@ export function getScoutDoubleKnightBlockerTile(attacker: Unit, aimTile: TileCoo
   const midX = attacker.x + dx / 2;
   const midY = attacker.y + dy / 2;
 
-  const byPos = new Map<string, Unit>();
+  const byPos = new Map<string, PosUnit>();
   for (const u of units) byPos.set(keyXY(u.x, u.y), u);
 
   return byPos.has(keyXY(midX, midY)) ? { x: midX, y: midY } : null;
@@ -41,7 +40,7 @@ export function getScoutDoubleKnightBlockerTile(attacker: Unit, aimTile: TileCoo
  * - Knight x1: delta is (±2,±1) or (±1,±2) => allowed, ignores blockers.
  * - Knight x2: delta is (±4,±2) or (±2,±4) => allowed ONLY if midpoint landing tile is empty.
  */
-export function canScoutKnightBypass(attacker: Unit, aimTile: TileCoord, units: Unit[]): boolean {
+export function canScoutKnightBypass(attacker: PosUnit, aimTile: TileCoord, units: PosUnit[]): boolean {
   const dx = aimTile.x - attacker.x;
   const dy = aimTile.y - attacker.y;
 
@@ -51,7 +50,7 @@ export function canScoutKnightBypass(attacker: Unit, aimTile: TileCoord, units: 
     const midX = attacker.x + dx / 2;
     const midY = attacker.y + dy / 2;
 
-    const byPos = new Map<string, Unit>();
+    const byPos = new Map<string, PosUnit>();
     for (const u of units) byPos.set(keyXY(u.x, u.y), u);
 
     // Only midpoint landing blocks double-knight
@@ -67,7 +66,7 @@ export function canScoutKnightBypass(attacker: Unit, aimTile: TileCoord, units: 
  * - Double-knight blocked: show ONLY the midpoint blocker tile (direct shot to blocker).
  * - Otherwise: show normal straight-line (blocked) path.
  */
-export function computeScoutProjectilePath(attacker: Unit, aimTile: TileCoord, units: Unit[]): TileCoord[] {
+export function computeScoutProjectilePath(attacker: PosUnit, aimTile: TileCoord, units: PosUnit[]): TileCoord[] {
   const blockerMid = getScoutDoubleKnightBlockerTile(attacker, aimTile, units);
   if (blockerMid) {
     return [

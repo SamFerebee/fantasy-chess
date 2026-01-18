@@ -7,11 +7,6 @@ type UnitGO =
   | { unitId: string; kind: "circle"; go: Phaser.GameObjects.Arc; radius: number }
   | { unitId: string; kind: "rect"; go: Phaser.GameObjects.Rectangle; radius: number };
 
-/**
- * Renders units from the renderer-facing RenderStateStore.
- *
- * IMPORTANT: This must not hold references to sim Unit objects.
- */
 export class UnitRenderer {
   private scene: Phaser.Scene;
   private cfg: BoardConfig;
@@ -20,8 +15,6 @@ export class UnitRenderer {
   private gosById = new Map<string, UnitGO>();
   private selectedUnitId: string | null = null;
 
-  // Unit ids that are currently being animated externally (movement/death).
-  // While animating, we skip snap-to-store position updates.
   private externallyAnimating = new Set<string>();
 
   private lastRevision = -1;
@@ -34,8 +27,6 @@ export class UnitRenderer {
 
   create() {
     this.reconcileWithStore(true);
-
-    // Keep visuals in sync if something updates render state (e.g. snapshot sync).
     this.scene.events.on("postupdate", () => this.reconcileWithStore(false));
   }
 
@@ -53,19 +44,11 @@ export class UnitRenderer {
     return go ? go.go : null;
   }
 
-  /**
-   * Mark a unit as being animated externally (movement/death).
-   * While true, store-driven position updates are suppressed.
-   */
   setUnitExternallyAnimating(unitId: string, animating: boolean) {
     if (animating) this.externallyAnimating.add(unitId);
     else this.externallyAnimating.delete(unitId);
   }
 
-  /**
-   * Used after an animation completes to snap to the exact isometric tile.
-   * Does not touch sim or render-store state.
-   */
   setUnitVisualTile(unitId: string, x: number, y: number) {
     const { sx, sy } = isoToScreen(x, y, this.cfg);
     const go = this.gosById.get(unitId);
@@ -73,10 +56,6 @@ export class UnitRenderer {
     go.go.setPosition(sx, sy);
   }
 
-  /**
-   * Destroy visuals immediately (used after death animation callback).
-   * RenderStateStore removal is handled separately.
-   */
   destroyUnitVisual(unitId: string) {
     const go = this.gosById.get(unitId);
     if (!go) return;
@@ -87,6 +66,19 @@ export class UnitRenderer {
     this.applySelectionVisuals();
   }
 
+  /** For snapshot sync / reconciliation: kill tweens + drop external animation locks. */
+  resetVisualAnimations() {
+    for (const go of this.gosById.values()) {
+      this.scene.tweens.killTweensOf(go.go as any);
+    }
+    this.externallyAnimating.clear();
+  }
+
+  /** Force an immediate full reconcile from the RenderStateStore. */
+  forceSyncFromStore() {
+    this.reconcileWithStore(true);
+  }
+
   private reconcileWithStore(force: boolean) {
     const rev = this.store.getRevision();
     if (!force && rev === this.lastRevision) return;
@@ -95,16 +87,15 @@ export class UnitRenderer {
     const units = this.store.getUnits();
     const liveIds = new Set<string>();
 
-    // Ensure all current units have visuals and are positioned.
     for (const u of units) {
       liveIds.add(u.id);
       const existing = this.gosById.get(u.id);
+
       if (!existing) {
         this.gosById.set(u.id, this.createUnitGo(u));
         continue;
       }
 
-      // If a unit's render-shape changed, recreate it.
       const expectedKind: UnitGO["kind"] = u.shape === "rect" ? "rect" : "circle";
       if (existing.kind !== expectedKind) {
         existing.go.destroy();
@@ -112,14 +103,12 @@ export class UnitRenderer {
         continue;
       }
 
-      // Update position from store unless we're animating externally.
       if (!this.externallyAnimating.has(u.id)) {
         const { sx, sy } = isoToScreen(u.x, u.y, this.cfg);
         existing.go.setPosition(sx, sy);
       }
     }
 
-    // Remove visuals for units that no longer exist in render state.
     for (const [unitId, go] of this.gosById.entries()) {
       if (liveIds.has(unitId)) continue;
       go.go.destroy();

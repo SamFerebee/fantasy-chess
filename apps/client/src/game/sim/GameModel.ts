@@ -13,12 +13,6 @@ import type { GameSnapshot } from "./GameSnapshot";
 export type RNG = { nextFloat: () => number };
 
 export class GameModel {
-  /**
-   * Authoritative storage:
-   * - unitById is the source of truth
-   * - unitOrder is the stable ordering (by unitId)
-   * - unitsView is a derived array view (stable reference) for legacy render/UI code
-   */
   private unitById = new Map<string, Unit>();
   private unitOrder: string[] = [];
   private unitsView: Unit[] = []; // stable reference
@@ -41,10 +35,18 @@ export class GameModel {
   // ---- Read-only helpers ----
 
   /**
-   * Returns a stable array view of units (ordered by authoritative unitId).
+   * Stable unit id ordering (authoritative ids, not array indices).
    * Treat as read-only.
    */
-  getUnits(): Unit[] {
+  getUnitIds(): ReadonlyArray<string> {
+    return this.unitOrder;
+  }
+
+  /**
+   * @deprecated Avoid using this from view/controller code. Prefer ids + getUnitById().
+   * Stable array view ordered by unitId. Treat as read-only.
+   */
+  getUnits(): ReadonlyArray<Unit> {
     return this.unitsView;
   }
 
@@ -97,7 +99,6 @@ export class GameModel {
       throw new Error(`Unsupported GameSnapshot version: ${String((snap as any).version)}`);
     }
 
-    // Clone to prevent accidental mutation coupling with network buffers.
     const nextUnits = snap.units.map(cloneUnit);
     this.loadUnits(nextUnits);
 
@@ -146,7 +147,6 @@ export class GameModel {
     if (!isInBoundsAndNotCutout(dest.x, dest.y, cfg)) return [];
     if (dest.x === u.x && dest.y === u.y) return [];
 
-    // Cannot end on another unit.
     const occ = this.unitIdByTileKey.get(tileKey(dest.x, dest.y));
     if (occ && occ !== unitId) return [];
 
@@ -167,7 +167,6 @@ export class GameModel {
 
     const cost = path.length - 1;
 
-    // Update occupancy index before/after mutation.
     this.unitIdByTileKey.delete(tileKey(u.x, u.y));
     u.x = to.x;
     u.y = to.y;
@@ -214,7 +213,6 @@ export class GameModel {
 
     const hitUnit = this.getUnitById(result.hit.id);
     if (!hitUnit) {
-      // Defensive; should not happen.
       this.turn.spendForAttack(attacker);
 
       const events: GameEvent[] = [

@@ -2,8 +2,12 @@ import Phaser from "phaser";
 import type { BoardConfig } from "../board/BoardConfig";
 import { isoToScreen } from "../board/iso";
 import type { TileCoord } from "../movement/path";
-import type { Unit } from "../units/UnitTypes";
 
+/**
+ * Purely-visual overlay showing attackable tiles.
+ *
+ * IMPORTANT: This must not depend on sim Unit objects.
+ */
 export class AttackRangeOverlay {
   private cfg: BoardConfig;
   private gfx: Phaser.GameObjects.Graphics;
@@ -13,12 +17,11 @@ export class AttackRangeOverlay {
     this.gfx = scene.add.graphics().setDepth(45);
   }
 
-  setSelectedUnit(_unit: Unit | null, tiles: TileCoord[]) {
+  setTiles(tiles: TileCoord[]) {
     this.gfx.clear();
 
     if (!tiles || tiles.length === 0) return;
 
-    // red, see-through
     this.gfx.fillStyle(0xff0000, 0.18);
 
     for (const t of tiles) {

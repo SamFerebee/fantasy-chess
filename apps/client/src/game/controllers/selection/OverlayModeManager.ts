@@ -6,10 +6,10 @@ import type { ActionBar } from "../../ui/ActionBar";
 import type { ActionMode } from "../../input/ActionMode";
 import type { AttackRangeOverlay } from "../../combat/AttackRangeOverlay";
 import type { ProjectilePathOverlay } from "../../combat/ProjectilePathOverlay";
-import type { Unit } from "../../units/UnitTypes";
 import type { GameModel } from "../../sim/GameModel";
 
 import { computeAttackTiles } from "../../combat/attackRange";
+import type { PosUnit } from "../../combat/lineOfSight";
 import { computeProjectilePath } from "../../combat/lineOfSight";
 import { computeScoutProjectilePath } from "../../combat/scout/ScoutShot";
 import { isInBoundsAndNotCutout } from "../../movement/movementRules";
@@ -18,7 +18,7 @@ type Tile = { x: number; y: number } | null;
 
 export function createOverlayModeManager(args: {
   cfg: BoardConfig;
-  getUnits: () => Unit[];
+  getLosUnits: () => PosUnit[];
   model: GameModel;
   unitRenderer: UnitRenderer;
   turns: TurnController;
@@ -36,12 +36,12 @@ export function createOverlayModeManager(args: {
     if (!selected || !args.turns.canControlUnit(selected)) {
       args.movement.setMoveRangeEnabled(false);
       args.movement.setHoverTile(null);
-      args.attackOverlay.setSelectedUnit(null, []);
+      args.attackOverlay.clear();
       return;
     }
 
     if (mode === "move") {
-      args.attackOverlay.setSelectedUnit(null, []);
+      args.attackOverlay.clear();
       args.movement.setMoveRangeEnabled(true, args.turns.getRemainingActionPoints(selected));
       args.movement.setHoverTile(null);
       return;
@@ -51,13 +51,13 @@ export function createOverlayModeManager(args: {
     args.movement.setMoveRangeEnabled(false);
 
     const tiles = computeAttackTiles(selected, args.cfg);
-    args.attackOverlay.setSelectedUnit(selected, tiles);
+    args.attackOverlay.setTiles(tiles);
   };
 
   const clearAll = () => {
     args.movement.setMoveRangeEnabled(false);
     args.movement.setHoverTile(null);
-    args.attackOverlay.setSelectedUnit(null, []);
+    args.attackOverlay.clear();
     args.projectilePathOverlay.clear();
   };
 
@@ -89,15 +89,17 @@ export function createOverlayModeManager(args: {
       const dist = Math.abs(selected.x - hit.x) + Math.abs(selected.y - hit.y);
       if (dist < 1 || dist > range) return;
 
-      const units = args.getUnits();
+      const units = args.getLosUnits();
 
       if (selected.name === "scout") {
-        const path = computeScoutProjectilePath(selected, hit, units);
+        const attacker: PosUnit = { id: selected.id, x: selected.x, y: selected.y };
+        const path = computeScoutProjectilePath(attacker, hit, units);
         args.projectilePathOverlay.setPath(path);
         return;
       }
 
-      const path = computeProjectilePath(selected, hit, units);
+      const attacker: PosUnit = { id: selected.id, x: selected.x, y: selected.y };
+      const path = computeProjectilePath(attacker, hit, units);
       args.projectilePathOverlay.setPath(path);
       return;
     }

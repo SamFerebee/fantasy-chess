@@ -1,5 +1,4 @@
 import type { BoardConfig } from "../board/BoardConfig";
-import type { Unit } from "../units/UnitTypes";
 import type { TileCoord } from "./path";
 
 export function keyXY(x: number, y: number) {
@@ -25,7 +24,10 @@ export function isInBoundsAndNotCutout(x: number, y: number, cfg: BoardConfig): 
   return true;
 }
 
-export function buildBlockedSet(units: Unit[], excludeUnitId?: string): Set<string> {
+export type PosId = { id: string; x: number; y: number };
+export type PosOnly = { x: number; y: number };
+
+export function buildBlockedSet(units: ReadonlyArray<PosId>, excludeUnitId?: string): Set<string> {
   const blocked = new Set<string>();
   for (const u of units) {
     if (excludeUnitId && u.id === excludeUnitId) continue;
@@ -39,7 +41,7 @@ export function buildBlockedSet(units: Unit[], excludeUnitId?: string): Set<stri
  * Excludes the starting tile.
  */
 export function computeReachableTiles(
-  start: Unit,
+  start: PosOnly,
   maxSteps: number,
   cfg: BoardConfig,
   blocked: Set<string>

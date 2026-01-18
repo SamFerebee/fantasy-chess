@@ -10,6 +10,7 @@ import { buildBlockedSet, computeReachableTiles, isInBoundsAndNotCutout } from "
 import { getPathForMove } from "./pathing";
 import type { GameModel } from "../sim/GameModel";
 import type { ActionQueue } from "../sim/ActionQueue";
+import type { RenderStateStore } from "../render/RenderStateStore";
 
 type MoveCompletePayload = { unitId: string };
 
@@ -21,6 +22,7 @@ export class MovementController {
   private model: GameModel;
   private actions: ActionQueue;
   private unitRenderer: UnitRenderer;
+  private renderStore: RenderStateStore;
 
   private moveOverlay: MoveRangeOverlay;
   private pathPreview: PathPreviewOverlay;
@@ -42,6 +44,7 @@ export class MovementController {
     model: GameModel;
     actions: ActionQueue;
     unitRenderer: UnitRenderer;
+    renderStore: RenderStateStore;
     moveOverlay: MoveRangeOverlay;
     pathPreview: PathPreviewOverlay;
   }) {
@@ -52,12 +55,12 @@ export class MovementController {
     this.model = args.model;
     this.actions = args.actions;
     this.unitRenderer = args.unitRenderer;
+    this.renderStore = args.renderStore;
 
     this.moveOverlay = args.moveOverlay;
     this.pathPreview = args.pathPreview;
 
     this.scene.events.on("postupdate", () => {
-      // Keep hover path preview fresh while moving camera/zoom
       if (this.moveRangeEnabled) this.redrawHoverPreview();
     });
   }
@@ -68,7 +71,7 @@ export class MovementController {
     this.listeners.set(event, arr);
   }
 
-  emit(event: string, payload: any) {
+  private emit(event: string, payload: any) {
     const arr = this.listeners.get(event);
     if (!arr) return;
     for (const cb of arr) cb(payload);
@@ -78,22 +81,30 @@ export class MovementController {
     return this.isAnimating;
   }
 
+  /** Used by snapshot sync/reconciliation to stop client-side movement visuals. */
+  cancelInFlightMove() {
+    this.isAnimating = false;
+    this.unitRenderer.resetVisualAnimations();
+    this.pathPreview.clear();
+    // Keep hover/range state; it will be recomputed by caller if needed.
+  }
+
   setMoveRangeEnabled(enabled: boolean, budget?: number) {
     this.moveRangeEnabled = enabled;
 
     const unit = this.getSelectedUnit();
     if (!enabled || !unit) {
       this.reachable = [];
-      this.moveOverlay.setSelectedUnit(null, []);
+      this.moveOverlay.setReachableTiles([]);
       this.pathPreview.clear();
       return;
     }
 
     const maxSteps = Math.max(0, budget ?? this.model.getRemainingActionPoints(unit));
-    const blocked = buildBlockedSet(this.model.getUnits(), unit.id);
+    const blocked = buildBlockedSet(this.renderStore.getUnits(), unit.id);
 
     this.reachable = computeReachableTiles(unit, maxSteps, this.cfg, blocked);
-    this.moveOverlay.setSelectedUnit(unit, this.reachable);
+    this.moveOverlay.setReachableTiles(this.reachable);
 
     this.redrawHoverPreview();
   }
@@ -121,10 +132,8 @@ export class MovementController {
     if (!isInBoundsAndNotCutout(dest.x, dest.y, this.cfg)) return false;
     if (this.model.getUnitAtTile(dest.x, dest.y)) return false;
 
-    // Prevent store-driven snap while we animate the move.
     this.unitRenderer.setUnitExternallyAnimating(unit.id, true);
 
-    // Authoritative move apply lives in the model (server-friendly).
     const res = this.actions.submitLocal({ type: "move", unitId: unit.id, to: dest });
     if (!res.ok) {
       this.unitRenderer.setUnitExternallyAnimating(unit.id, false);
@@ -142,11 +151,9 @@ export class MovementController {
     animateUnitAlongPath(this.scene, go, path, this.tileToWorld, () => {
       this.isAnimating = false;
 
-      // Snap to exact isometric position.
       this.unitRenderer.setUnitVisualTile(unit.id, dest.x, dest.y);
       this.unitRenderer.setUnitExternallyAnimating(unit.id, false);
 
-      // After move, refresh move range overlay based on remaining AP.
       const uNow = this.model.getUnitById(unit.id);
       if (uNow) this.setMoveRangeEnabled(this.moveRangeEnabled, this.model.getRemainingActionPoints(uNow));
 
@@ -175,7 +182,6 @@ export class MovementController {
       return;
     }
 
-    // Only show preview if hover tile is in the reachable set.
     const inReach = this.reachable.some((t) => t.x === hover.x && t.y === hover.y);
     if (!inReach) {
       this.pathPreview.clear();
@@ -183,7 +189,7 @@ export class MovementController {
     }
 
     const budget = this.model.getRemainingActionPoints(unit);
-    const blocked = buildBlockedSet(this.model.getUnits(), unit.id);
+    const blocked = buildBlockedSet(this.renderStore.getUnits(), unit.id);
     const path = getPathForMove(unit, hover, budget, this.cfg, blocked);
 
     if (!path || path.length < 2) {

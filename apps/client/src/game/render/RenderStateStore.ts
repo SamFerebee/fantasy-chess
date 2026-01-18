@@ -3,12 +3,6 @@ import type { GameEvent } from "../sim/GameEvents";
 import type { Team, UnitShape, UnitName, AttackType } from "../units/UnitTypes";
 import { compareUnitId } from "../util/idSort";
 
-/**
- * Minimal, renderer-facing unit state.
- *
- * This is intentionally a separate object graph from sim Units to avoid
- * accidental mutation coupling between UI/render code and authoritative sim.
- */
 export type RenderUnitState = {
   id: string;
   team: Team;
@@ -23,17 +17,17 @@ export type RenderUnitState = {
   maxHP: number;
 };
 
-/**
- * Renderer-side state store updated only from sim events and/or snapshots.
- *
- * - Authoritative identity is `unitId`
- * - Ordering is stable via `unitOrder` (sorted by unitId)
- * - `unitsView` is a derived stable array reference for render loops
- */
+function tileKey(x: number, y: number) {
+  return `${x},${y}`;
+}
+
 export class RenderStateStore {
   private unitById = new Map<string, RenderUnitState>();
   private unitOrder: string[] = [];
   private unitsView: RenderUnitState[] = [];
+
+  // Optional perf/ergonomics: tile occupancy index for hover/click logic.
+  private unitIdByTileKey = new Map<string, string>();
 
   private revision = 0;
 
@@ -50,15 +44,16 @@ export class RenderStateStore {
     return this.unitById.get(id) ?? null;
   }
 
-  /**
-   * Replace the entire render state from a snapshot.
-   * Uses clones to avoid sharing object references with snapshot buffers.
-   */
+  getUnitIdAtTile(x: number, y: number): string | null {
+    return this.unitIdByTileKey.get(tileKey(x, y)) ?? null;
+  }
+
   applySnapshot(snapshot: GameSnapshot) {
     const nextById = new Map<string, RenderUnitState>();
+    const nextByTile = new Map<string, string>();
 
     for (const u of snapshot.units) {
-      nextById.set(u.id, {
+      const ru: RenderUnitState = {
         id: u.id,
         team: u.team,
         name: u.name,
@@ -68,20 +63,21 @@ export class RenderStateStore {
         y: u.y,
         hp: u.hp,
         maxHP: u.maxHP,
-      });
+      };
+      nextById.set(u.id, ru);
+      nextByTile.set(tileKey(ru.x, ru.y), ru.id);
     }
 
     this.unitById = nextById;
+    this.unitIdByTileKey = nextByTile;
     this.unitOrder = [...nextById.keys()].sort(compareUnitId);
     this.rebuildUnitsViewInPlace();
     this.bump();
   }
 
   /**
-   * Apply sim-originated events to update render state.
-   *
-   * Note: `unitRemoved` is intentionally NOT applied here.
-   * Death visuals often need to play before removal. Call `finalizeRemoveUnit`.
+   * Note: unitRemoved is intentionally NOT applied here. Call finalizeRemoveUnit()
+   * after death visuals complete.
    */
   applyEvents(events: GameEvent[]) {
     let changed = false;
@@ -91,9 +87,15 @@ export class RenderStateStore {
         case "unitMoved": {
           const u = this.unitById.get(ev.unitId);
           if (!u) break;
+
           if (u.x === ev.x && u.y === ev.y) break;
+
+          // Update tile index
+          this.unitIdByTileKey.delete(tileKey(u.x, u.y));
           u.x = ev.x;
           u.y = ev.y;
+          this.unitIdByTileKey.set(tileKey(u.x, u.y), u.id);
+
           changed = true;
           break;
         }
@@ -108,8 +110,6 @@ export class RenderStateStore {
           break;
         }
 
-        // unitDamaged is feedback-only; hp updates come via unitHpChanged.
-        // apChanged / turnEnded / etc are not render-unit state.
         default:
           break;
       }
@@ -118,11 +118,11 @@ export class RenderStateStore {
     if (changed) this.bump();
   }
 
-  /**
-   * Remove a unit from render state (typically after death animation).
-   */
   finalizeRemoveUnit(unitId: string) {
-    if (!this.unitById.has(unitId)) return;
+    const u = this.unitById.get(unitId);
+    if (!u) return;
+
+    this.unitIdByTileKey.delete(tileKey(u.x, u.y));
     this.unitById.delete(unitId);
 
     const idx = this.unitOrder.indexOf(unitId);
