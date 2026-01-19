@@ -2,6 +2,7 @@ import type { AttackProfile, Unit } from "../units/UnitTypes";
 import type { TileCoord } from "../movement/path";
 import { isAdjacent4Way } from "../rules/adjacency";
 import { bresenhamLine } from "../util/gridLine";
+import type { PosUnit } from "./lineOfSight";
 import { canScoutKnightBypass, getScoutDoubleKnightBlockerTile } from "./scout/ScoutShot";
 import { tryResolveScoutMicroLaneTilePath } from "./microlanes/ScoutMicroLaneResolver";
 
@@ -31,7 +32,7 @@ function getPrimaryRangeFromAttack(attack: AttackProfile): number {
 }
 
 export class CombatResolver {
-  tryAttackAtTile(attacker: Unit, targetTile: TileCoord, units: Unit[]): AttackResult {
+  tryAttackAtTile(attacker: Unit, targetTile: TileCoord, units: ReadonlyArray<Unit>): AttackResult {
     const atk = attacker.attack;
 
     const range = getPrimaryRangeFromAttack(atk);
@@ -56,15 +57,19 @@ export class CombatResolver {
 
       // Blocked before aim.
       if (attacker.name === "scout") {
+        // Convert to PosUnit views for scout helper functions (they operate only on id/x/y).
+        const attackerPos: PosUnit = { id: attacker.id, x: attacker.x, y: attacker.y };
+        const unitsPos: PosUnit[] = units.map((u) => ({ id: u.id, x: u.x, y: u.y }));
+
         // 1) double-knight midpoint block rule (if midpoint occupied, hit it)
-        const mid = getScoutDoubleKnightBlockerTile(attacker, targetTile, units);
+        const mid = getScoutDoubleKnightBlockerTile(attackerPos, targetTile, unitsPos);
         if (mid) {
           const midUnit = findUnitAt(units, mid.x, mid.y);
           if (midUnit) return this.applyDamage(attacker, midUnit);
         }
 
         // 2) knight bypass endpoints
-        if (canScoutKnightBypass(attacker, targetTile, units)) {
+        if (canScoutKnightBypass(attackerPos, targetTile, unitsPos)) {
           const hit = findUnitAt(units, targetTile.x, targetTile.y);
           if (!hit) return { ok: true, hit: null, damageDealt: 0, targetHPAfter: null, killed: false };
           return this.applyDamage(attacker, hit);
@@ -103,7 +108,7 @@ export class CombatResolver {
     return { ok: true, killed, hit: target, damageDealt: mitigated, targetHPAfter: hpAfter };
   }
 
-  tryAttack(attacker: Unit, target: Unit, units: Unit[]): AttackResult {
+  tryAttack(attacker: Unit, target: Unit, units: ReadonlyArray<Unit>): AttackResult {
     return this.tryAttackAtTile(attacker, { x: target.x, y: target.y }, units);
   }
 }
@@ -112,11 +117,11 @@ function keyXY(x: number, y: number) {
   return `${x},${y}`;
 }
 
-function findUnitAt(units: Unit[], x: number, y: number): Unit | null {
+function findUnitAt(units: ReadonlyArray<Unit>, x: number, y: number): Unit | null {
   return units.find((u) => u.x === x && u.y === y) ?? null;
 }
 
-function firstUnitOnLineToTile(attacker: Unit, targetTile: TileCoord, units: Unit[]): Unit | null {
+function firstUnitOnLineToTile(attacker: Unit, targetTile: TileCoord, units: ReadonlyArray<Unit>): Unit | null {
   const byPos = new Map<string, Unit>();
   for (const u of units) byPos.set(keyXY(u.x, u.y), u);
 

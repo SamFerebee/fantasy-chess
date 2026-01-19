@@ -11,7 +11,7 @@ import { computeScoutProjectilePath } from "./scout/ScoutShot";
 export function computeProjectilePreviewPath(args: {
   attacker: Unit;
   aimTile: TileCoord;
-  units: Unit[];
+  units: ReadonlyArray<Unit>;
 }): TileCoord[] {
   const { attacker, aimTile, units } = args;
 

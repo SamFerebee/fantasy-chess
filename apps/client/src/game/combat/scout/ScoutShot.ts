@@ -22,7 +22,11 @@ function isDoubleKnightDelta(dx: number, dy: number): boolean {
  * For double-knight attempts only:
  * returns the midpoint landing tile if it is occupied (this is the ONLY blocker for 2x knight).
  */
-export function getScoutDoubleKnightBlockerTile(attacker: PosUnit, aimTile: TileCoord, units: PosUnit[]): TileCoord | null {
+export function getScoutDoubleKnightBlockerTile(
+  attacker: PosUnit,
+  aimTile: TileCoord,
+  units: ReadonlyArray<PosUnit>
+): TileCoord | null {
   const dx = aimTile.x - attacker.x;
   const dy = aimTile.y - attacker.y;
   if (!isDoubleKnightDelta(dx, dy)) return null;
@@ -41,7 +45,11 @@ export function getScoutDoubleKnightBlockerTile(attacker: PosUnit, aimTile: Tile
  * - Knight x1: delta is (±2,±1) or (±1,±2) => allowed, ignores blockers.
  * - Knight x2: delta is (±4,±2) or (±2,±4) => allowed ONLY if midpoint landing tile is empty.
  */
-export function canScoutKnightBypass(attacker: PosUnit, aimTile: TileCoord, units: PosUnit[]): boolean {
+export function canScoutKnightBypass(
+  attacker: PosUnit,
+  aimTile: TileCoord,
+  units: ReadonlyArray<PosUnit>
+): boolean {
   const dx = aimTile.x - attacker.x;
   const dy = aimTile.y - attacker.y;
 
@@ -66,13 +74,13 @@ export function canScoutKnightBypass(attacker: PosUnit, aimTile: TileCoord, unit
  * - If unblocked: show normal straight-line path.
  * - If blocked: apply knight rules, then micro-lane seam path, else show blocked LOS path.
  *
- * IMPORTANT: This function intentionally calls the SAME micro-lane helper used by CombatResolver
- * so preview + resolution stay identical.
+ * IMPORTANT: For knight / double-knight bypass, the preview MUST NOT show intervening tiles.
+ * It should show only the tiles the shot can actually occupy/hit: [start, end] (or [start, midpoint]).
  */
 export function computeScoutProjectilePath(
   attacker: PosUnit,
   aimTile: TileCoord,
-  units: PosUnit[],
+  units: ReadonlyArray<PosUnit>,
   maxRange: number
 ): TileCoord[] {
   const losPath = computeProjectilePath(attacker, aimTile, units);
@@ -92,7 +100,7 @@ export function computeScoutProjectilePath(
     ];
   }
 
-  // 2) knight bypass preview (ignore blockers)
+  // 2) knight bypass preview (ignore blockers) -> IMPORTANT: endpoints only
   if (canScoutKnightBypass(attacker, aimTile, units)) {
     return [
       { x: attacker.x, y: attacker.y },
@@ -101,10 +109,9 @@ export function computeScoutProjectilePath(
   }
 
   // 3) micro-lane seam threading preview
-  // We call the exact same helper as CombatResolver. It expects Unit[], but only uses id/x/y.
-  // Provide minimal compatible objects to avoid importing Unit types here.
+  // Uses the same helper as CombatResolver (expects Unit-like objects: {id,x,y})
   const attackerUnitLike = { id: attacker.id, x: attacker.x, y: attacker.y } as any;
-  const unitsLike = units.map((u) => ({ id: u.id, x: u.x, y: u.y })) as any;
+  const unitsLike = Array.from(units, (u) => ({ id: u.id, x: u.x, y: u.y })) as any;
 
   const micro = tryResolveScoutMicroLaneTilePath(attackerUnitLike, aimTile, unitsLike, Math.max(0, maxRange));
   if (micro) return micro;

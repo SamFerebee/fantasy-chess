@@ -7,21 +7,16 @@ import { CombatResolver } from "../combat/CombatResolver";
 import { computeAttackTiles } from "../combat/attackRange";
 import { computeProjectilePreviewPath } from "../combat/ProjectilePreview";
 import { TurnState } from "../turns/TurnState";
-import { compareUnitId } from "../util/idSort";
 import { isAdjacent4Way } from "../rules/adjacency";
 import type { GameAction, ApplyResult } from "./GameActions";
 import type { GameEvent } from "./GameEvents";
 import type { GameSnapshot } from "./GameSnapshot";
+import { UnitIndex } from "./UnitIndex";
 
 export type RNG = { nextFloat: () => number };
 
 export class GameModel {
-  private unitById = new Map<string, Unit>();
-  private unitOrder: string[] = [];
-  private unitsView: Unit[] = []; // stable reference
-
-  // Fast tile occupancy index: "x,y" -> unitId
-  private unitIdByTileKey = new Map<string, string>();
+  private units: UnitIndex;
 
   private turn: TurnState;
   private combat: CombatResolver;
@@ -32,18 +27,18 @@ export class GameModel {
     this.combat = new CombatResolver();
     this.rng = rng;
 
-    this.loadUnits(units);
+    this.units = new UnitIndex(units);
   }
 
   // ---- Read-only helpers ----
 
   getUnitIds(): ReadonlyArray<string> {
-    return this.unitOrder;
+    return this.units.getUnitIds();
   }
 
   /** @deprecated Prefer ids + getUnitById(). */
   getUnits(): ReadonlyArray<Unit> {
-    return this.unitsView;
+    return this.units.getUnitsView();
   }
 
   getActiveTeam(): Team {
@@ -55,13 +50,11 @@ export class GameModel {
   }
 
   getUnitById(id: string): Unit | null {
-    return this.unitById.get(id) ?? null;
+    return this.units.getUnitById(id);
   }
 
   getUnitAtTile(x: number, y: number): Unit | null {
-    const id = this.unitIdByTileKey.get(tileKey(x, y));
-    if (!id) return null;
-    return this.unitById.get(id) ?? null;
+    return this.units.getUnitAtTile(x, y);
   }
 
   getRemainingActionPoints(unit: Unit): number {
@@ -85,7 +78,7 @@ export class GameModel {
   getSnapshot(): GameSnapshot {
     return {
       version: 1,
-      units: this.unitOrder.map((id) => cloneUnit(this.mustGetUnit(id))),
+      units: this.units.getUnitIds().map((id) => cloneUnit(this.units.mustGetUnit(id))),
       turn: this.turn.snapshot(),
     };
   }
@@ -96,7 +89,7 @@ export class GameModel {
     }
 
     const nextUnits = snap.units.map(cloneUnit);
-    this.loadUnits(nextUnits);
+    this.units.loadUnits(nextUnits);
 
     this.turn.restore(snap.turn);
   }
@@ -112,7 +105,7 @@ export class GameModel {
     if (!u) return [];
     if (maxSteps <= 0) return [];
 
-    const blocked = buildBlockedSet(this.unitsView, unitId);
+    const blocked = buildBlockedSet(this.units.getUnitsView(), unitId);
     return computeReachableTiles({ x: u.x, y: u.y }, maxSteps, cfg, blocked);
   }
 
@@ -129,7 +122,7 @@ export class GameModel {
   getProjectilePreviewPath(attackerId: string, aimTile: TileCoord): TileCoord[] {
     const u = this.getUnitById(attackerId);
     if (!u) return [];
-    return computeProjectilePreviewPath({ attacker: u, aimTile, units: this.unitsView });
+    return computeProjectilePreviewPath({ attacker: u, aimTile, units: this.units.getUnitsView() });
   }
 
   // ---- Deterministic action entrypoint ----
@@ -170,10 +163,10 @@ export class GameModel {
     if (!isInBoundsAndNotCutout(dest.x, dest.y, cfg)) return [];
     if (dest.x === u.x && dest.y === u.y) return [];
 
-    const occ = this.unitIdByTileKey.get(tileKey(dest.x, dest.y));
+    const occ = this.units.getUnitIdAtTile(dest.x, dest.y);
     if (occ && occ !== unitId) return [];
 
-    const blocked = buildBlockedSet(this.unitsView, unitId);
+    const blocked = buildBlockedSet(this.units.getUnitsView(), unitId);
     return getPathForMove(u, dest, maxSteps, cfg, blocked);
   }
 
@@ -190,10 +183,7 @@ export class GameModel {
 
     const cost = path.length - 1;
 
-    this.unitIdByTileKey.delete(tileKey(u.x, u.y));
-    u.x = to.x;
-    u.y = to.y;
-    this.unitIdByTileKey.set(tileKey(u.x, u.y), u.id);
+    this.units.setUnitTile(u.id, to.x, to.y);
 
     this.turn.spendForMove(u, cost);
 
@@ -255,10 +245,7 @@ export class GameModel {
     if (!best) return { ok: false, reason: "illegalMove" };
 
     // Apply the move now; stage attack events for after animation.
-    this.unitIdByTileKey.delete(tileKey(attacker.x, attacker.y));
-    attacker.x = best.dest.x;
-    attacker.y = best.dest.y;
-    this.unitIdByTileKey.set(tileKey(attacker.x, attacker.y), attacker.id);
+    this.units.setUnitTile(attacker.id, best.dest.x, best.dest.y);
 
     this.turn.spendForMove(attacker, best.cost);
 
@@ -294,7 +281,7 @@ export class GameModel {
       if (!aimed) return { ok: false, reason: "illegalTarget" };
     }
 
-    const result = this.combat.tryAttackAtTile(attacker, target, this.unitsView);
+    const result = this.combat.tryAttackAtTile(attacker, target, this.units.getUnitsView());
     if (!result.ok) return { ok: false, reason: result.reason };
 
     if (!result.hit) {
@@ -339,7 +326,7 @@ export class GameModel {
     }
 
     if (result.killed) {
-      this.removeUnit(hitUnit.id);
+      this.units.removeUnit(hitUnit.id);
       events.push({ type: "unitRemoved", unitId: hitUnit.id });
     }
 
@@ -352,71 +339,6 @@ export class GameModel {
     }
 
     return { ok: true, events };
-  }
-
-  // ---- Authoritative unit storage helpers ----
-
-  private loadUnits(units: Unit[]) {
-    validateUnits(units);
-
-    this.unitById.clear();
-    this.unitIdByTileKey.clear();
-
-    for (const u of units) {
-      this.unitById.set(u.id, u);
-      this.unitIdByTileKey.set(tileKey(u.x, u.y), u.id);
-    }
-
-    this.unitOrder = units.map((u) => u.id).sort(compareUnitId);
-    this.rebuildUnitsViewInPlace();
-  }
-
-  private removeUnit(unitId: string) {
-    const u = this.unitById.get(unitId);
-    if (!u) return;
-
-    this.unitById.delete(unitId);
-    this.unitIdByTileKey.delete(tileKey(u.x, u.y));
-
-    const idx = this.unitOrder.indexOf(unitId);
-    if (idx !== -1) this.unitOrder.splice(idx, 1);
-
-    this.rebuildUnitsViewInPlace();
-  }
-
-  private rebuildUnitsViewInPlace() {
-    this.unitsView.length = 0;
-    for (const id of this.unitOrder) {
-      const u = this.unitById.get(id);
-      if (u) this.unitsView.push(u);
-    }
-  }
-
-  private mustGetUnit(id: string): Unit {
-    const u = this.unitById.get(id);
-    if (!u) throw new Error(`Unit not found: ${id}`);
-    return u;
-  }
-}
-
-function tileKey(x: number, y: number): string {
-  return `${x},${y}`;
-}
-
-function validateUnits(units: Unit[]) {
-  const seenIds = new Set<string>();
-  const seenTiles = new Set<string>();
-
-  for (const u of units) {
-    if (!u || typeof u.id !== "string" || u.id.trim() === "") {
-      throw new Error("Unit missing valid id");
-    }
-    if (seenIds.has(u.id)) throw new Error(`Duplicate unit id detected: ${u.id}`);
-    seenIds.add(u.id);
-
-    const k = tileKey(u.x, u.y);
-    if (seenTiles.has(k)) throw new Error(`Duplicate tile occupancy detected at ${k}`);
-    seenTiles.add(k);
   }
 }
 
