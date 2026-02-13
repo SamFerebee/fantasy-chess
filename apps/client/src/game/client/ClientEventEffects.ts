@@ -26,7 +26,38 @@ export class ClientEventEffects {
   applyEvents(events: GameEvent[]) {
     const damagedTargets = new Set<string>();
 
+    // -----------------------------------------------------------------------
+    // Attack + hit/block animations (best-effort, driven only from events)
+    // -----------------------------------------------------------------------
+    for (const ev of events) {
+      if (ev.type === "unitDamaged") {
+        const attacker = this.renderStore.getUnit(ev.attackerId);
+        const target = this.renderStore.getUnit(ev.targetId);
+
+        if (attacker && target) {
+          // Attacker faces the target for the attack.
+          this.unitRenderer.playAttack(attacker.id, { x: attacker.x, y: attacker.y }, { x: target.x, y: target.y });
+
+          // Target faces attacker for reaction.
+          if (ev.amount <= 0) {
+            this.unitRenderer.playBlock(target.id, { x: target.x, y: target.y }, { x: attacker.x, y: attacker.y });
+          } else {
+            this.unitRenderer.playHit(target.id, { x: target.x, y: target.y }, { x: attacker.x, y: attacker.y });
+          }
+        }
+      }
+
+      if (ev.type === "attackMissed") {
+        const attacker = this.renderStore.getUnit(ev.attackerId);
+        if (attacker) {
+          this.unitRenderer.playAttack(attacker.id, { x: attacker.x, y: attacker.y }, ev.target);
+        }
+      }
+    }
+
+    // -----------------------------------------------------------------------
     // Primary hit feedback (damage numbers)
+    // -----------------------------------------------------------------------
     for (const ev of events) {
       if (ev.type === "unitDamaged") {
         damagedTargets.add(ev.targetId);
@@ -43,16 +74,24 @@ export class ClientEventEffects {
       }
     }
 
+    // -----------------------------------------------------------------------
     // Death animation + finalize removal from render store.
+    // -----------------------------------------------------------------------
     for (const ev of events) {
       if (ev.type !== "unitRemoved") continue;
 
       this.unitRenderer.setUnitExternallyAnimating(ev.unitId, true);
 
-      this.feedback.playDeath(ev.unitId, () => {
-        this.unitRenderer.setUnitExternallyAnimating(ev.unitId, false);
-        this.unitRenderer.destroyUnitVisual(ev.unitId);
-        this.renderStore.finalizeRemoveUnit(ev.unitId);
+      // Try to show a death pose/anim before the fade-out feedback.
+      this.unitRenderer.playDeath(ev.unitId);
+
+      // After the death pose shows briefly, do the existing fade and remove.
+      this.scene.time.delayedCall(260, () => {
+        this.feedback.playDeath(ev.unitId, () => {
+          this.unitRenderer.setUnitExternallyAnimating(ev.unitId, false);
+          this.unitRenderer.destroyUnitVisual(ev.unitId);
+          this.renderStore.finalizeRemoveUnit(ev.unitId);
+        });
       });
     }
   }

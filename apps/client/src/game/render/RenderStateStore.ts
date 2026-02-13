@@ -8,6 +8,7 @@ export type RenderUnitState = {
   team: Team;
   name: UnitName;
   shape: UnitShape;
+  spriteKey: string;
   attackType: AttackType;
 
   x: number;
@@ -58,6 +59,7 @@ export class RenderStateStore {
         team: u.team,
         name: u.name,
         shape: u.shape,
+        spriteKey: u.spriteKey,
         attackType: u.attackType,
         x: u.x,
         y: u.y,

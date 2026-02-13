@@ -10,7 +10,12 @@ function tileKey(x: number, y: number): string {
  * Scout-only micro-lane resolver:
  * Returns a TileCoord[] highlight path (tile centers visited) if a seam path exists.
  */
-export function tryResolveScoutMicroLaneTilePath(attacker: Unit, aimTile: TileCoord, units: Unit[], maxRange: number): TileCoord[] | null {
+export function tryResolveScoutMicroLaneTilePath(
+  attacker: Unit,
+  aimTile: TileCoord,
+  units: ReadonlyArray<Unit>,
+  maxRange: number
+): TileCoord[] | null {
   const occupied = new Set<string>();
   for (const u of units) {
     if (u.id === attacker.id) continue;

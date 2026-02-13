@@ -16,7 +16,7 @@ function keyXY(x: number, y: number) {
  * Default projectile path: straight Bresenham line, but stops at the first unit encountered.
  * (Includes attacker tile at index 0.)
  */
-export function computeProjectilePath(attacker: PosUnit, aimTile: TileCoord, units: PosUnit[]): TileCoord[] {
+export function computeProjectilePath(attacker: PosUnit, aimTile: TileCoord, units: ReadonlyArray<PosUnit>): TileCoord[] {
   const byPos = new Map<string, PosUnit>();
   for (const u of units) byPos.set(keyXY(u.x, u.y), u);
 

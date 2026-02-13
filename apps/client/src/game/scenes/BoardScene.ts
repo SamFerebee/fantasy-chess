@@ -31,24 +31,37 @@ import { SelectionController } from "../controllers/SelectionController";
 import { SnapshotSyncClient } from "../net/SnapshotSyncClient";
 import { ClientEventEffects } from "../client/ClientEventEffects";
 
+import { preloadGeneratedKnight, registerGeneratedKnightAnimations } from "../assets/GeneratedKnightSpriteSheet";
+
+type BoardBounds = { minX: number; minY: number; maxX: number; maxY: number };
+
 export class BoardScene extends Phaser.Scene {
   private snapshotSync!: SnapshotSyncClient;
 
+  private boardRenderer!: BoardRenderer;
+  private boardBounds!: BoardBounds;
+  private cfg = BOARD;
+
+  preload() {
+    preloadGeneratedKnight(this);
+  }
+
   create() {
-    const cfg = BOARD;
+    registerGeneratedKnightAnimations(this);
+
+    const cfg = this.cfg;
 
     // Board
-    const renderer = new BoardRenderer(this, cfg);
-    const bounds = renderer.draw(0, 0);
+    this.boardRenderer = new BoardRenderer(this, cfg);
+    this.boardBounds = this.boardRenderer.draw(0, 0) as BoardBounds;
 
-    // Camera
-    const cam = this.cameras.main;
-    const pad = 60;
-    const boundsW = bounds.maxX - bounds.minX + pad * 2;
-    const boundsH = bounds.maxY - bounds.minY + pad * 2;
-    const fitZoom = Math.min(cam.width / boundsW, cam.height / boundsH) * 0.98;
-    cam.setZoom(fitZoom * cfg.zoomOutFactor);
-    cam.centerOn((bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2);
+    // Camera layout (initial)
+    this.layoutCamera();
+
+    // Re-layout camera on resize (critical for Phaser.Scale.RESIZE)
+    this.scale.on("resize", () => {
+      this.layoutCamera();
+    });
 
     // Sim
     const units = createInitialUnits();
@@ -77,7 +90,7 @@ export class BoardScene extends Phaser.Scene {
 
     // Overlays + input
     const overlay = new TileOverlay(this, cfg);
-    const picker = new TilePicker(this, cfg, cam);
+    const picker = new TilePicker(this, cfg, this.cameras.main);
 
     const moveOverlay = new MoveRangeOverlay(this, cfg);
     moveOverlay.setReachableTiles([]);
@@ -95,7 +108,7 @@ export class BoardScene extends Phaser.Scene {
     // Controllers
     const movement = new MovementController({
       scene: this,
-      cam,
+      cam: this.cameras.main,
       cfg,
       model,
       actions,
@@ -106,7 +119,7 @@ export class BoardScene extends Phaser.Scene {
 
     const turns = new TurnController({
       scene: this,
-      cam,
+      cam: this.cameras.main,
       unitRenderer,
       overlay,
       movement,
@@ -116,13 +129,13 @@ export class BoardScene extends Phaser.Scene {
 
     const actionBar = new ActionBar({
       scene: this,
-      cam,
+      cam: this.cameras.main,
       onEndTurn: () => turns.endTurn(),
     });
 
     // HUDs
-    const unitInfoHud = new UnitInfoHud({ scene: this, cam });
-    const enemyInfoHud = new UnitInfoHud({ scene: this, cam, anchor: "right" });
+    const unitInfoHud = new UnitInfoHud({ scene: this, cam: this.cameras.main });
+    const enemyInfoHud = new UnitInfoHud({ scene: this, cam: this.cameras.main, anchor: "right" });
     let enemyInfoUnitId: string | null = null;
 
     const toHudUnit = (unitId: string | null): HudUnitState | null => {
@@ -178,7 +191,7 @@ export class BoardScene extends Phaser.Scene {
     // Selection (includes enemy HUD hover/click pin behavior)
     new SelectionController({
       scene: this,
-      cam,
+      cam: this.cameras.main,
       cfg,
       model,
       renderStore,
@@ -194,5 +207,35 @@ export class BoardScene extends Phaser.Scene {
         enemyInfoUnitId = unitId;
       },
     }).attach();
+  }
+
+  /**
+   * Fit + center the board so it occupies most of the viewport.
+   * IMPORTANT: must run on create AND on every resize when using Phaser.Scale.RESIZE.
+   */
+  private layoutCamera() {
+    const cam = this.cameras.main;
+
+    // Board bounds (world-space pixels, produced by BoardRenderer)
+    const b = this.boardBounds;
+
+    // Padding around the board in screen pixels (feel free to tweak)
+    const pad = 80;
+
+    const boundsW = b.maxX - b.minX + pad * 2;
+    const boundsH = b.maxY - b.minY + pad * 2;
+
+    // Recompute fit zoom from current camera viewport size
+    const fitZoom = Math.min(cam.width / boundsW, cam.height / boundsH);
+
+    // We want the board to take up the majority of the screen.
+    // cfg.zoomOutFactor was originally used to zoom out; with fullscreen, that can make the board too small.
+    // Clamp so it never becomes tiny.
+    const desired = fitZoom * this.cfg.zoomOutFactor;
+    const minZoom = fitZoom * 0.85; // ensures "mostly fills" even if zoomOutFactor is small
+    cam.setZoom(Math.max(desired, minZoom));
+
+    // Center on board
+    cam.centerOn((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2);
   }
 }
