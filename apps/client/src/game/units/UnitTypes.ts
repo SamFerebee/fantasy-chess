@@ -48,17 +48,6 @@ export type AttackProfile =
       range: number;
       /** Allow firing at empty tiles (current behavior). */
       canTargetEmptyTiles: true;
-
-      /**
-       * Optional fallback patterns that are ONLY considered when the straight-line
-       * projectile path is blocked before the aim tile.
-       *
-       * Intended behavior:
-       * - aim anywhere within range
-       * - resolve as normal LOS projectile
-       * - if blocked early, and aim delta matches a pattern endpoint, resolve via that pattern instead
-       */
-      patternFallbackIds?: string[];
     })
   | (AttackBase & {
       kind: "projectile_unblockable_single";
@@ -111,6 +100,7 @@ export type Unit = {
   /**
    * Legacy coarse behavior flag.
    * Derived from `attack.kind` in UnitCatalog; keep until all call sites migrate.
+   * Long-term: remove and use `attack.kind`.
    */
   attackType: AttackType;
 
@@ -123,6 +113,12 @@ export type Unit = {
    * Placeholder render shape until real assets exist.
    */
   shape: UnitShape;
+
+  /**
+   * Sprite texture key used by Phaser.
+   * If the texture isn't loaded/present, the renderer will fall back to `shape`.
+   */
+  spriteKey: string;
 
   /**
    * Future-proof attack behavior definition.

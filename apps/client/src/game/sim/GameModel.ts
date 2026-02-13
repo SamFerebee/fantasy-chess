@@ -5,25 +5,18 @@ import { getPathForMove } from "../movement/pathing";
 import type { Unit, Team } from "../units/UnitTypes";
 import { CombatResolver } from "../combat/CombatResolver";
 import { computeAttackTiles } from "../combat/attackRange";
-import type { PosUnit } from "../combat/lineOfSight";
-import { computeProjectilePath } from "../combat/lineOfSight";
-import { resolvePatternShot } from "../combat/PatternShotResolver";
+import { computeProjectilePreviewPath } from "../combat/ProjectilePreview";
 import { TurnState } from "../turns/TurnState";
-import { compareUnitId } from "../util/idSort";
 import { isAdjacent4Way } from "../rules/adjacency";
 import type { GameAction, ApplyResult } from "./GameActions";
 import type { GameEvent } from "./GameEvents";
 import type { GameSnapshot } from "./GameSnapshot";
+import { UnitIndex } from "./UnitIndex";
 
 export type RNG = { nextFloat: () => number };
 
 export class GameModel {
-  private unitById = new Map<string, Unit>();
-  private unitOrder: string[] = [];
-  private unitsView: Unit[] = []; // stable reference
-
-  // Fast tile occupancy index: "x,y" -> unitId
-  private unitIdByTileKey = new Map<string, string>();
+  private units: UnitIndex;
 
   private turn: TurnState;
   private combat: CombatResolver;
@@ -34,25 +27,18 @@ export class GameModel {
     this.combat = new CombatResolver();
     this.rng = rng;
 
-    this.loadUnits(units);
+    this.units = new UnitIndex(units);
   }
 
   // ---- Read-only helpers ----
 
-  /**
-   * Stable unit id ordering (authoritative ids, not array indices).
-   * Treat as read-only.
-   */
   getUnitIds(): ReadonlyArray<string> {
-    return this.unitOrder;
+    return this.units.getUnitIds();
   }
 
-  /**
-   * @deprecated Avoid using this from view/controller code. Prefer ids + getUnitById().
-   * Stable array view ordered by unitId. Treat as read-only.
-   */
+  /** @deprecated Prefer ids + getUnitById(). */
   getUnits(): ReadonlyArray<Unit> {
-    return this.unitsView;
+    return this.units.getUnitsView();
   }
 
   getActiveTeam(): Team {
@@ -64,13 +50,11 @@ export class GameModel {
   }
 
   getUnitById(id: string): Unit | null {
-    return this.unitById.get(id) ?? null;
+    return this.units.getUnitById(id);
   }
 
   getUnitAtTile(x: number, y: number): Unit | null {
-    const id = this.unitIdByTileKey.get(tileKey(x, y));
-    if (!id) return null;
-    return this.unitById.get(id) ?? null;
+    return this.units.getUnitAtTile(x, y);
   }
 
   getRemainingActionPoints(unit: Unit): number {
@@ -89,12 +73,12 @@ export class GameModel {
     return this.turn.canAttack(unit);
   }
 
-  // ---- Snapshotting (server-authoritative friendly) ----
+  // ---- Snapshotting ----
 
   getSnapshot(): GameSnapshot {
     return {
       version: 1,
-      units: this.unitOrder.map((id) => cloneUnit(this.mustGetUnit(id))),
+      units: this.units.getUnitIds().map((id) => cloneUnit(this.units.mustGetUnit(id))),
       turn: this.turn.snapshot(),
     };
   }
@@ -105,35 +89,26 @@ export class GameModel {
     }
 
     const nextUnits = snap.units.map(cloneUnit);
-    this.loadUnits(nextUnits);
+    this.units.loadUnits(nextUnits);
 
     this.turn.restore(snap.turn);
   }
 
-  /**
-   * Public, non-mutating move path preview.
-   * Safe to use from UI/controllers without changing model state.
-   */
+  // ---- Derived data helpers ----
+
   previewMovePath(unitId: string, dest: TileCoord, maxSteps: number, cfg: BoardConfig): TileCoord[] {
     return this.computeMovePath(unitId, dest, maxSteps, cfg);
   }
 
-  /**
-   * Derived data: all reachable tiles within `maxSteps` for the given unit.
-   * Safe for UI previews and server validation (pure function over current state).
-   */
   getReachableTiles(unitId: string, maxSteps: number, cfg: BoardConfig): TileCoord[] {
     const u = this.getUnitById(unitId);
     if (!u) return [];
     if (maxSteps <= 0) return [];
 
-    const blocked = buildBlockedSet(this.unitsView, unitId);
+    const blocked = buildBlockedSet(this.units.getUnitsView(), unitId);
     return computeReachableTiles({ x: u.x, y: u.y }, maxSteps, cfg, blocked);
   }
 
-  /**
-   * Derived data: all tiles that this unit can target (range overlay).
-   */
   getAttackableTiles(unitId: string, cfg: BoardConfig): TileCoord[] {
     const u = this.getUnitById(unitId);
     if (!u) return [];
@@ -141,47 +116,13 @@ export class GameModel {
   }
 
   /**
-   * Derived data: projectile/LOS preview path for a ranged attacker.
-   * Returns empty if attacker doesn't exist.
-   *
-   * Rule:
-   * - Always show the normal straight-line projectile path first.
-   * - If that path is blocked before the aim tile, and the attack has fallback patterns,
-   *   and the aim matches a legal pattern endpoint, preview the pattern path instead.
+   * Derived data: projectile preview path for overlays.
+   * Delegated to combat module to keep GameModel smaller and ensure preview == resolver behavior.
    */
   getProjectilePreviewPath(attackerId: string, aimTile: TileCoord): TileCoord[] {
     const u = this.getUnitById(attackerId);
     if (!u) return [];
-
-    const unitsPos: PosUnit[] = this.unitsView.map((x) => ({ id: x.id, x: x.x, y: x.y }));
-    const attackerPos: PosUnit = { id: u.id, x: u.x, y: u.y };
-
-    // Default: straight-line LOS path (truncated at first blocker).
-    const losPath = computeProjectilePath(attackerPos, aimTile, unitsPos);
-    if (losPath.length === 0) return losPath;
-
-    const last = losPath[losPath.length - 1];
-    const blockedBeforeAim = last.x !== aimTile.x || last.y !== aimTile.y;
-
-    if (u.attack.kind === "projectile_blockable_single" && blockedBeforeAim) {
-      const fallbackIds = u.attack.patternFallbackIds ?? [];
-      if (fallbackIds.length > 0) {
-        for (const patternId of fallbackIds) {
-          const res = resolvePatternShot({
-            attacker: u,
-            aimTile,
-            units: this.unitsView,
-            patternId,
-            blockedByUnits: true,
-            pierceCount: undefined,
-          });
-          if (!res) continue;
-          return res.path;
-        }
-      }
-    }
-
-    return losPath;
+    return computeProjectilePreviewPath({ attacker: u, aimTile, units: this.units.getUnitsView() });
   }
 
   // ---- Deterministic action entrypoint ----
@@ -222,10 +163,10 @@ export class GameModel {
     if (!isInBoundsAndNotCutout(dest.x, dest.y, cfg)) return [];
     if (dest.x === u.x && dest.y === u.y) return [];
 
-    const occ = this.unitIdByTileKey.get(tileKey(dest.x, dest.y));
+    const occ = this.units.getUnitIdAtTile(dest.x, dest.y);
     if (occ && occ !== unitId) return [];
 
-    const blocked = buildBlockedSet(this.unitsView, unitId);
+    const blocked = buildBlockedSet(this.units.getUnitsView(), unitId);
     return getPathForMove(u, dest, maxSteps, cfg, blocked);
   }
 
@@ -242,10 +183,7 @@ export class GameModel {
 
     const cost = path.length - 1;
 
-    this.unitIdByTileKey.delete(tileKey(u.x, u.y));
-    u.x = to.x;
-    u.y = to.y;
-    this.unitIdByTileKey.set(tileKey(u.x, u.y), u.id);
+    this.units.setUnitTile(u.id, to.x, to.y);
 
     this.turn.spendForMove(u, cost);
 
@@ -272,7 +210,7 @@ export class GameModel {
     if (attacker.team === target.team) return { ok: false, reason: "illegalTarget" };
     if (attacker.attack.kind !== "melee_adjacent") return { ok: false, reason: "illegalMove" };
 
-    // If already adjacent, just attack now (no staging needed).
+    // If already adjacent, just attack now.
     if (isAdjacent4Way(attacker, target)) {
       return this.applyAttackTile(attacker.id, { x: target.x, y: target.y });
     }
@@ -284,7 +222,7 @@ export class GameModel {
     const moveBudget = remainingAp - attackCost;
     if (moveBudget <= 0) return { ok: false, reason: "noAp" };
 
-    // Deterministic candidate order (stable across client/server).
+    // Deterministic candidate order.
     const candidates: TileCoord[] = [
       { x: target.x + 1, y: target.y },
       { x: target.x - 1, y: target.y },
@@ -306,11 +244,8 @@ export class GameModel {
 
     if (!best) return { ok: false, reason: "illegalMove" };
 
-    // Apply the move portion now, but only emit move events immediately.
-    this.unitIdByTileKey.delete(tileKey(attacker.x, attacker.y));
-    attacker.x = best.dest.x;
-    attacker.y = best.dest.y;
-    this.unitIdByTileKey.set(tileKey(attacker.x, attacker.y), attacker.id);
+    // Apply the move now; stage attack events for after animation.
+    this.units.setUnitTile(attacker.id, best.dest.x, best.dest.y);
 
     this.turn.spendForMove(attacker, best.cost);
 
@@ -319,12 +254,8 @@ export class GameModel {
       { type: "apChanged", unitId: attacker.id, remainingAp: this.turn.getRemainingAp(attacker) },
     ];
 
-    // After moving, we must now be adjacent.
-    if (!isAdjacent4Way(attacker, target)) {
-      return { ok: false, reason: "illegalMove" };
-    }
+    if (!isAdjacent4Way(attacker, target)) return { ok: false, reason: "illegalMove" };
 
-    // Apply the attack portion now, but stage its events for after the move animation.
     const atkRes = this.applyAttackTile(attacker.id, { x: target.x, y: target.y });
     if (!atkRes.ok) return atkRes;
 
@@ -350,13 +281,15 @@ export class GameModel {
       if (!aimed) return { ok: false, reason: "illegalTarget" };
     }
 
-    const result = this.combat.tryAttackAtTile(attacker, target, this.unitsView);
+    const result = this.combat.tryAttackAtTile(attacker, target, this.units.getUnitsView());
     if (!result.ok) return { ok: false, reason: result.reason };
 
     if (!result.hit) {
       this.turn.spendForAttack(attacker);
 
-      const events: GameEvent[] = [{ type: "apChanged", unitId: attacker.id, remainingAp: this.turn.getRemainingAp(attacker) }];
+      const events: GameEvent[] = [
+        { type: "apChanged", unitId: attacker.id, remainingAp: this.turn.getRemainingAp(attacker) },
+      ];
 
       if (attacker.attack.consumesRemainingAp || this.turn.getRemainingAp(attacker) <= 0) {
         this.turn.endTurn();
@@ -369,22 +302,18 @@ export class GameModel {
     const hitUnit = this.getUnitById(result.hit.id);
     if (!hitUnit) {
       this.turn.spendForAttack(attacker);
-
-      const events: GameEvent[] = [{ type: "apChanged", unitId: attacker.id, remainingAp: this.turn.getRemainingAp(attacker) }];
-
+      const events: GameEvent[] = [
+        { type: "apChanged", unitId: attacker.id, remainingAp: this.turn.getRemainingAp(attacker) },
+      ];
       if (attacker.attack.consumesRemainingAp || this.turn.getRemainingAp(attacker) <= 0) {
         this.turn.endTurn();
         events.push({ type: "turnEnded", activeTeam: this.turn.getActiveTeam() });
       }
-
       return { ok: true, events };
     }
 
     const beforeHp = hitUnit.hp;
-
-    if (result.targetHPAfter != null) {
-      hitUnit.hp = result.targetHPAfter;
-    }
+    if (result.targetHPAfter != null) hitUnit.hp = result.targetHPAfter;
 
     const events: GameEvent[] = [];
 
@@ -397,7 +326,7 @@ export class GameModel {
     }
 
     if (result.killed) {
-      this.removeUnit(hitUnit.id);
+      this.units.removeUnit(hitUnit.id);
       events.push({ type: "unitRemoved", unitId: hitUnit.id });
     }
 
@@ -410,71 +339,6 @@ export class GameModel {
     }
 
     return { ok: true, events };
-  }
-
-  // ---- Authoritative unit storage helpers ----
-
-  private loadUnits(units: Unit[]) {
-    validateUnits(units);
-
-    this.unitById.clear();
-    this.unitIdByTileKey.clear();
-
-    for (const u of units) {
-      this.unitById.set(u.id, u);
-      this.unitIdByTileKey.set(tileKey(u.x, u.y), u.id);
-    }
-
-    this.unitOrder = units.map((u) => u.id).sort(compareUnitId);
-    this.rebuildUnitsViewInPlace();
-  }
-
-  private removeUnit(unitId: string) {
-    const u = this.unitById.get(unitId);
-    if (!u) return;
-
-    this.unitById.delete(unitId);
-    this.unitIdByTileKey.delete(tileKey(u.x, u.y));
-
-    const idx = this.unitOrder.indexOf(unitId);
-    if (idx !== -1) this.unitOrder.splice(idx, 1);
-
-    this.rebuildUnitsViewInPlace();
-  }
-
-  private rebuildUnitsViewInPlace() {
-    this.unitsView.length = 0;
-    for (const id of this.unitOrder) {
-      const u = this.unitById.get(id);
-      if (u) this.unitsView.push(u);
-    }
-  }
-
-  private mustGetUnit(id: string): Unit {
-    const u = this.unitById.get(id);
-    if (!u) throw new Error(`Unit not found: ${id}`);
-    return u;
-  }
-}
-
-function tileKey(x: number, y: number): string {
-  return `${x},${y}`;
-}
-
-function validateUnits(units: Unit[]) {
-  const seenIds = new Set<string>();
-  const seenTiles = new Set<string>();
-
-  for (const u of units) {
-    if (!u || typeof u.id !== "string" || u.id.trim() === "") {
-      throw new Error("Unit missing valid id");
-    }
-    if (seenIds.has(u.id)) throw new Error(`Duplicate unit id detected: ${u.id}`);
-    seenIds.add(u.id);
-
-    const k = tileKey(u.x, u.y);
-    if (seenTiles.has(k)) throw new Error(`Duplicate tile occupancy detected at ${k}`);
-    seenTiles.add(k);
   }
 }
 
