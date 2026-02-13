@@ -1,4 +1,4 @@
-import type { BoardConfig } from "../board/BoardConfig";
+import type { BoardRulesConfig } from "../board/BoardRules";
 import type { TileCoord } from "./path";
 import { isInBoundsAndNotCutout, keyXY } from "./movementRules";
 
@@ -8,7 +8,7 @@ export function getPathForMove(
   start: PosOnly,
   dest: TileCoord,
   maxSteps: number,
-  cfg: BoardConfig,
+  cfg: BoardRulesConfig,
   blocked: Set<string>
 ): TileCoord[] {
   if (maxSteps <= 0) return [];

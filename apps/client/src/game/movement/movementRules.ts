@@ -1,28 +1,17 @@
-import type { BoardConfig } from "../board/BoardConfig";
+import type { BoardRulesConfig } from "../board/BoardRules";
+import { isInBoundsAndNotCutout } from "../board/BoardRules";
 import type { TileCoord } from "./path";
+
+export { isInBoundsAndNotCutout };
 
 export function keyXY(x: number, y: number) {
   return `${x},${y}`;
 }
 
-export function isInBoundsAndNotCutout(x: number, y: number, cfg: BoardConfig): boolean {
-  if (x < 0 || y < 0 || x >= cfg.cols || y >= cfg.rows) return false;
+// NOTE: isInBoundsAndNotCutout is now defined in board/BoardRules.ts so that
+// sim/movement can share it without importing render BoardConfig.
 
-  const c = cfg.cornerCut;
-  if (c > 0) {
-    const maxX = cfg.cols - 1;
-    const maxY = cfg.rows - 1;
-
-    const inTL = x < c && y < c;
-    const inTR = x > maxX - c && y < c;
-    const inBL = x < c && y > maxY - c;
-    const inBR = x > maxX - c && y > maxY - c;
-
-    if (inTL || inTR || inBL || inBR) return false;
-  }
-
-  return true;
-}
+export { isInBoundsAndNotCutout };
 
 export type PosId = { id: string; x: number; y: number };
 export type PosOnly = { x: number; y: number };
@@ -43,7 +32,7 @@ export function buildBlockedSet(units: ReadonlyArray<PosId>, excludeUnitId?: str
 export function computeReachableTiles(
   start: PosOnly,
   maxSteps: number,
-  cfg: BoardConfig,
+  cfg: BoardRulesConfig,
   blocked: Set<string>
 ): TileCoord[] {
   const out: TileCoord[] = [];

@@ -1,6 +1,7 @@
-import type { BoardConfig } from "../board/BoardConfig";
+import type { BoardRulesConfig } from "../board/BoardRules";
+import { isInBoundsAndNotCutout } from "../board/BoardRules";
 import type { TileCoord } from "../movement/path";
-import { buildBlockedSet, computeReachableTiles, isInBoundsAndNotCutout } from "../movement/movementRules";
+import { buildBlockedSet, computeReachableTiles } from "../movement/movementRules";
 import { getPathForMove } from "../movement/pathing";
 import type { Unit, Team } from "../units/UnitTypes";
 import { CombatResolver } from "../combat/CombatResolver";
@@ -12,17 +13,16 @@ import type { GameAction, ApplyResult } from "./GameActions";
 import type { GameEvent } from "./GameEvents";
 import type { GameSnapshot } from "./GameSnapshot";
 import { UnitIndex } from "./UnitIndex";
-
-export type RNG = { nextFloat: () => number };
+import { DeterministicRng } from "./DeterministicRng";
 
 export class GameModel {
   private units: UnitIndex;
 
   private turn: TurnState;
   private combat: CombatResolver;
-  private rng: RNG;
+  private rng: DeterministicRng;
 
-  constructor(units: Unit[], rng: RNG = { nextFloat: () => Math.random() }) {
+  constructor(units: Unit[], rng: DeterministicRng = new DeterministicRng(0xC0FFEE)) {
     this.turn = new TurnState();
     this.combat = new CombatResolver();
     this.rng = rng;
@@ -77,14 +77,15 @@ export class GameModel {
 
   getSnapshot(): GameSnapshot {
     return {
-      version: 1,
+      version: 2,
       units: this.units.getUnitIds().map((id) => cloneUnit(this.units.mustGetUnit(id))),
       turn: this.turn.snapshot(),
+      rng: this.rng.snapshot(),
     };
   }
 
   restoreFromSnapshot(snap: GameSnapshot) {
-    if (snap.version !== 1) {
+    if (snap.version !== 2) {
       throw new Error(`Unsupported GameSnapshot version: ${String((snap as any).version)}`);
     }
 
@@ -92,15 +93,18 @@ export class GameModel {
     this.units.loadUnits(nextUnits);
 
     this.turn.restore(snap.turn);
+
+    // Restore deterministic RNG state.
+    this.rng = new DeterministicRng(snap.rng);
   }
 
   // ---- Derived data helpers ----
 
-  previewMovePath(unitId: string, dest: TileCoord, maxSteps: number, cfg: BoardConfig): TileCoord[] {
+  previewMovePath(unitId: string, dest: TileCoord, maxSteps: number, cfg: BoardRulesConfig): TileCoord[] {
     return this.computeMovePath(unitId, dest, maxSteps, cfg);
   }
 
-  getReachableTiles(unitId: string, maxSteps: number, cfg: BoardConfig): TileCoord[] {
+  getReachableTiles(unitId: string, maxSteps: number, cfg: BoardRulesConfig): TileCoord[] {
     const u = this.getUnitById(unitId);
     if (!u) return [];
     if (maxSteps <= 0) return [];
@@ -109,7 +113,7 @@ export class GameModel {
     return computeReachableTiles({ x: u.x, y: u.y }, maxSteps, cfg, blocked);
   }
 
-  getAttackableTiles(unitId: string, cfg: BoardConfig): TileCoord[] {
+  getAttackableTiles(unitId: string, cfg: BoardRulesConfig): TileCoord[] {
     const u = this.getUnitById(unitId);
     if (!u) return [];
     return computeAttackTiles(u, cfg);
@@ -127,7 +131,7 @@ export class GameModel {
 
   // ---- Deterministic action entrypoint ----
 
-  applyAction(action: GameAction, cfg?: BoardConfig): ApplyResult {
+  applyAction(action: GameAction, cfg?: BoardRulesConfig): ApplyResult {
     switch (action.type) {
       case "endTurn":
         return this.applyEndTurn();
@@ -156,7 +160,7 @@ export class GameModel {
     return { ok: true, events };
   }
 
-  private computeMovePath(unitId: string, dest: TileCoord, maxSteps: number, cfg: BoardConfig): TileCoord[] {
+  private computeMovePath(unitId: string, dest: TileCoord, maxSteps: number, cfg: BoardRulesConfig): TileCoord[] {
     const u = this.getUnitById(unitId);
     if (!u) return [];
     if (maxSteps <= 0) return [];
@@ -170,7 +174,7 @@ export class GameModel {
     return getPathForMove(u, dest, maxSteps, cfg, blocked);
   }
 
-  private applyMove(unitId: string, to: TileCoord, cfg: BoardConfig): ApplyResult {
+  private applyMove(unitId: string, to: TileCoord, cfg: BoardRulesConfig): ApplyResult {
     const u = this.getUnitById(unitId);
     if (!u) return { ok: false, reason: "invalidUnit" };
     if (!this.turn.canControlUnit(u)) return { ok: false, reason: "notYourTurn" };
@@ -200,7 +204,7 @@ export class GameModel {
     return { ok: true, events, movePath: path, moveCost: cost };
   }
 
-  private applyMeleeChaseAttack(attackerId: string, targetId: string, cfg: BoardConfig): ApplyResult {
+  private applyMeleeChaseAttack(attackerId: string, targetId: string, cfg: BoardRulesConfig): ApplyResult {
     const attacker = this.getUnitById(attackerId);
     const target = this.getUnitById(targetId);
     if (!attacker) return { ok: false, reason: "invalidUnit" };

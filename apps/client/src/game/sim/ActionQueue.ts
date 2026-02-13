@@ -1,4 +1,4 @@
-import type { BoardConfig } from "../board/BoardConfig";
+import type { BoardRulesConfig } from "../board/BoardRules";
 import type { ClientCommandMessage, SnapshotSyncMessage } from "../net/NetMessages";
 import type { GameAction, ApplyResult } from "./GameActions";
 import type { GameEvent } from "./GameEvents";
@@ -14,7 +14,7 @@ import type { GameModel } from "./GameModel";
  */
 export class ActionQueue {
   private model: GameModel;
-  private cfg: BoardConfig;
+  private cfg: BoardRulesConfig;
 
   // Client-side hook to drive render-state updates from sim results.
   private onApplied?: (res: ApplyResult) => void;
@@ -22,7 +22,7 @@ export class ActionQueue {
   private nextSeq = 1;
   private lastProcessedSeq = 0;
 
-  constructor(args: { model: GameModel; cfg: BoardConfig; startingSeq?: number; onApplied?: (res: ApplyResult) => void }) {
+  constructor(args: { model: GameModel; cfg: BoardRulesConfig; startingSeq?: number; onApplied?: (res: ApplyResult) => void }) {
     this.model = args.model;
     this.cfg = args.cfg;
     this.onApplied = args.onApplied;

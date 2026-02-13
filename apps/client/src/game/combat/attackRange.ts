@@ -1,4 +1,4 @@
-import type { BoardConfig } from "../board/BoardConfig";
+import type { BoardRulesConfig } from "../board/BoardRules";
 import type { Unit } from "../units/UnitTypes";
 import type { TileCoord } from "../movement/path";
 import { isInBoundsAndNotCutout } from "../movement/movementRules";
@@ -38,7 +38,7 @@ export function getAttackRangeForUnit(unit: Unit): number {
  * - quake_aoe: tiles within radius around the unit (Manhattan)
  * - everything else: tiles within Manhattan distance <= range
  */
-export function computeAttackTiles(unit: Unit, cfg: BoardConfig): TileCoord[] {
+export function computeAttackTiles(unit: Unit, cfg: BoardRulesConfig): TileCoord[] {
   const out: TileCoord[] = [];
 
   // Melee adjacency
