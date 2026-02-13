@@ -3,8 +3,13 @@ import type { AttackProfile, AttackType, Team, Unit, UnitName, UnitShape } from 
 export type UnitDef = {
   name: UnitName;
 
-  // Rendering placeholder
+  // Rendering
   shape: UnitShape;
+  /**
+   * Phaser texture key for the unit sprite.
+   * Convention: "unit_<name>" (e.g., "unit_scout").
+   */
+  spriteKey: string;
 
   // Turn economy
   actionPoints: number;
@@ -27,6 +32,7 @@ export const UNIT_CATALOG: Record<UnitName, UnitDef> = {
   fighter: {
     name: "fighter",
     shape: "circle",
+    spriteKey: "unit_fighter",
     actionPoints: 3,
     maxHP: 10,
     damage: 4,
@@ -46,6 +52,7 @@ export const UNIT_CATALOG: Record<UnitName, UnitDef> = {
   scout: {
     name: "scout",
     shape: "rect",
+    spriteKey: "unit_scout",
     actionPoints: 5,
     maxHP: 8,
     damage: 3,
@@ -65,6 +72,12 @@ export function getUnitDef(name: UnitName): UnitDef {
   const def = UNIT_CATALOG[name];
   if (!def) throw new Error(`Unknown UnitName "${String(name)}"`);
   return def;
+}
+
+export function getAllUnitSpriteKeys(): string[] {
+  const keys = new Set<string>();
+  for (const def of Object.values(UNIT_CATALOG)) keys.add(def.spriteKey);
+  return [...keys.values()];
 }
 
 function deriveLegacyAttackType(attack: AttackProfile): AttackType {
@@ -110,6 +123,7 @@ export function createUnitFromCatalog(args: { id: string; team: Team; x: number;
 
     name: def.name,
     shape: def.shape,
+    spriteKey: def.spriteKey,
 
     actionPoints: def.actionPoints,
 

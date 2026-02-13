@@ -100,6 +100,7 @@ export type Unit = {
   /**
    * Legacy coarse behavior flag.
    * Derived from `attack.kind` in UnitCatalog; keep until all call sites migrate.
+   * Long-term: remove and use `attack.kind`.
    */
   attackType: AttackType;
 
@@ -112,6 +113,12 @@ export type Unit = {
    * Placeholder render shape until real assets exist.
    */
   shape: UnitShape;
+
+  /**
+   * Sprite texture key used by Phaser.
+   * If the texture isn't loaded/present, the renderer will fall back to `shape`.
+   */
+  spriteKey: string;
 
   /**
    * Future-proof attack behavior definition.

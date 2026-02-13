@@ -152,11 +152,17 @@ export class MovementController {
     this.unitRenderer.setUnitExternallyAnimating(unitId, true);
     this.isAnimating = true;
 
+    // Visual-only: start walk animation + set facing using the first step.
+    this.unitRenderer.playMoveStart(unitId, path);
+
     animateUnitAlongPath(this.scene, go, path, this.tileToWorld, () => {
       this.isAnimating = false;
 
       this.unitRenderer.setUnitVisualTile(unitId, dest.x, dest.y);
       this.unitRenderer.setUnitExternallyAnimating(unitId, false);
+
+      // Visual-only: return to idle pose after movement ends.
+      this.unitRenderer.playIdle(unitId);
 
       finish();
     });
